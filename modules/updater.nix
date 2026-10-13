@@ -53,14 +53,19 @@ let
     PROFILE="/nix/var/nix/profiles/containers/$CONTAINER"
     OLD_PATH=$(readlink -f "$PROFILE" 2>/dev/null || echo "none")
 
-    echo "Registering $CONTAINER as a Nix profile (GC safe)..."
-    ${pkgs.nix}/bin/nix-env --profile "$PROFILE" --set "$STORE_PATH"
-
     # Defensive: /var/lib/machines/<name>/ is normally created by the NixOS
     # containers module when my.containers.<name>.enable = true on this host.
     # Create it ourselves if missing so a one-off update for a never-deployed
     # container doesn't fail at the symlink swap.
     mkdir -p "/var/lib/machines/$CONTAINER"
+
+    if [ "$OLD_PATH" != "none" ] && [ -e "$OLD_PATH" ] && [ "$OLD_PATH" != "$STORE_PATH" ]; then
+      echo "Preserving previous generation symlink for $CONTAINER: $OLD_PATH"
+      ln -sfn "$OLD_PATH" "/var/lib/machines/$CONTAINER/previous"
+    fi
+
+    echo "Registering $CONTAINER as a Nix profile (GC safe)..."
+    ${pkgs.nix}/bin/nix-env --profile "$PROFILE" --set "$STORE_PATH"
 
     echo "Updating symlink /var/lib/machines/$CONTAINER/current..."
     ln -sfn "$PROFILE" "/var/lib/machines/$CONTAINER/current"
@@ -73,6 +78,123 @@ let
     fi
 
     echo "Stage complete for $CONTAINER."
+  '';
+
+  healthcheckCases =
+    if cfg.healthchecks != { } then
+      ''
+        case "$CONTAINER" in
+        ${lib.concatStringsSep "\n" (
+          lib.mapAttrsToList (name: cmd: ''
+            "${name}")
+              if ! ( ${cmd} ); then
+                sleep "$interval"
+                elapsed=$((elapsed + interval))
+                continue
+              fi
+              ;;
+          '') cfg.healthchecks
+        )}
+        *)
+          ;;
+        esac
+      ''
+    else
+      "";
+
+  activateScript = pkgs.writeShellScript "container-activate" ''
+    set -euo pipefail
+    CONTAINER=$1
+    PROFILE="/nix/var/nix/profiles/containers/$CONTAINER"
+
+    echo "Activating staged update for container: $CONTAINER"
+
+    if machinectl status "$CONTAINER" >/dev/null 2>&1; then
+      echo "Restarting container $CONTAINER to apply staged update..."
+      machinectl restart "$CONTAINER" 2>/dev/null || systemctl restart "container@$CONTAINER"
+    else
+      echo "Container $CONTAINER is not currently running. Starting it..."
+      systemctl start "container@$CONTAINER"
+    fi
+
+    # Allow container transition to settle
+    sleep 2
+
+    echo "Waiting for container@$CONTAINER to reach active status..."
+    timeout=${toString cfg.healthcheckTimeoutSec}
+    elapsed=0
+    interval=2
+    healthy=0
+
+    while [ "$elapsed" -lt "$timeout" ]; do
+      if systemctl is-active --quiet "container@$CONTAINER"; then
+        ${healthcheckCases}
+        healthy=1
+        break
+      fi
+
+      if [ "$(systemctl is-failed "container@$CONTAINER" 2>/dev/null || true)" = "failed" ]; then
+        echo "container@$CONTAINER entered failed state!"
+        break
+      fi
+
+      sleep "$interval"
+      elapsed=$((elapsed + interval))
+    done
+
+    if [ "$healthy" -eq 1 ]; then
+      rm -f "/run/container-updater/changed-$CONTAINER"
+      echo "Activation complete for $CONTAINER."
+      exit 0
+    fi
+
+    echo "Healthcheck FAILED for container $CONTAINER after ''${elapsed}s!"
+
+    ${lib.optionalString cfg.autoRollback ''
+      PREVIOUS="/var/lib/machines/$CONTAINER/previous"
+      if [ -e "$PREVIOUS" ] || [ -e "$PROFILE-1-link" ]; then
+        echo "Initiating automatic rollback for $CONTAINER..."
+        if ${pkgs.nix}/bin/nix-env --profile "$PROFILE" --rollback 2>/dev/null; then
+          echo "Rolled back Nix profile $PROFILE to previous generation."
+        elif [ -e "$PREVIOUS" ]; then
+          echo "Falling back to previous symlink: $PREVIOUS"
+          ln -sfn "$(readlink -f "$PREVIOUS")" "/var/lib/machines/$CONTAINER/current"
+        fi
+
+        echo "Restarting container@$CONTAINER on restored closure..."
+        systemctl restart "container@$CONTAINER" || true
+        echo "Rollback completed for $CONTAINER."
+      else
+        echo "No previous generation available for $CONTAINER to roll back to!"
+      fi
+    ''}
+
+    rm -f "/run/container-updater/changed-$CONTAINER"
+    exit 1
+  '';
+
+  rollbackScript = pkgs.writeShellScript "container-rollback" ''
+    set -euo pipefail
+    CONTAINER=$1
+    PROFILE="/nix/var/nix/profiles/containers/$CONTAINER"
+    PREVIOUS="/var/lib/machines/$CONTAINER/previous"
+
+    echo "Rollback requested for container: $CONTAINER"
+    if [ -e "$PREVIOUS" ] || [ -e "$PROFILE-1-link" ]; then
+      if ${pkgs.nix}/bin/nix-env --profile "$PROFILE" --rollback 2>/dev/null; then
+        echo "Rolled back Nix profile $PROFILE to previous generation."
+      elif [ -e "$PREVIOUS" ]; then
+        echo "Updating current symlink back to previous target..."
+        ln -sfn "$(readlink -f "$PREVIOUS")" "/var/lib/machines/$CONTAINER/current"
+      fi
+
+      echo "Restarting container@$CONTAINER on restored closure..."
+      systemctl restart "container@$CONTAINER"
+      echo "Rollback completed for $CONTAINER."
+    else
+      echo "No previous generation available for $CONTAINER."
+      exit 1
+    fi
   '';
 in
 {
@@ -112,6 +234,31 @@ in
         of the automatic 03:00 timer.
       '';
     };
+    autoRollback = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Automatically roll back to the previous container generation if the
+        container fails to start or fails its healthcheck after activation.
+      '';
+    };
+    healthcheckTimeoutSec = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 60;
+      description = ''
+        Maximum time (seconds) to wait for a container to reach active state
+        and pass any configured healthcheck after restart.
+      '';
+    };
+    healthchecks = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
+      default = { };
+      description = ''
+        Optional custom healthcheck shell command per container name to verify service health.
+        Executed on the host; must exit 0 when healthy.
+        Example: { "caddy" = "curl -fsS http://10.85.46.107:80/health"; }
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -149,22 +296,40 @@ in
         # ~5-30s downtime per container. Must be run AFTER stage.
         # ----------------------------------------------------------------
         "update-container-activate@" = {
-          description = "Activate staged update for NixOS Container %i (restart)";
+          description = "Activate staged update for NixOS Container %i (restart + healthcheck)";
 
-          path = with pkgs; [ systemd ];
+          path = with pkgs; [
+            systemd
+            nix
+            coreutils
+          ];
 
           scriptArgs = "%i";
           script = ''
-            CONTAINER=$1
-            if machinectl status "$CONTAINER" >/dev/null 2>&1; then
-              echo "Restarting container $CONTAINER to apply staged update..."
-              machinectl restart "$CONTAINER"
-            else
-              echo "Container $CONTAINER is not currently running. Starting it..."
-              systemctl start "container@$CONTAINER"
-            fi
-            rm -f "/run/container-updater/changed-$CONTAINER"
-            echo "Activation complete for $CONTAINER."
+            exec ${activateScript} "$@"
+          '';
+
+          serviceConfig = {
+            Type = "oneshot";
+            TimeoutStartSec = "5m";
+          };
+        };
+
+        # ----------------------------------------------------------------
+        # Rollback: revert the container to its previous closure and restart.
+        # ----------------------------------------------------------------
+        "update-container-rollback@" = {
+          description = "Roll back NixOS Container %i to previous generation";
+
+          path = with pkgs; [
+            systemd
+            nix
+            coreutils
+          ];
+
+          scriptArgs = "%i";
+          script = ''
+            exec ${rollbackScript} "$@"
           '';
 
           serviceConfig = {
