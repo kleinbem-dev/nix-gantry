@@ -81,6 +81,14 @@ let
   pkiDir = "/nix/persist/pki/internal";
 
   # Generate Caddy upstream blocks: localhost:remotePort → remote mTLS
+  # Outbound: localhost:<port> → <target>:443, mutually authenticated.
+  # The server cert is verified against the internal CA (its SAN carries
+  # the upstream's inventory name, hence tls_server_name) and this
+  # container presents the shared client cert. Both files are bind-mounted
+  # from /nix/persist/pki/internal by the bindMounts block below.
+  # `tls_insecure_skip_verify` ("temporary bypass to unblock testing") lived
+  # here until 2026-10-20 — with it, every flow labelled mTLS in
+  # zero-trust.nix was plain TLS to whoever answered on that IP.
   mkUpstreamBlock = upstream: ''
     :${toString upstream.port} {
       reverse_proxy ${upstream.target}:443 {
@@ -88,9 +96,10 @@ let
         transport http {
           tls
           tls_server_name ${upstream.name}
-          # tls_client_auth /etc/pki/internal/client.crt /etc/pki/internal/client.key
-          # tls_trust_pool file /etc/pki/internal/ca.crt
-          tls_insecure_skip_verify # Temporary bypass to unblock testing
+          tls_client_auth /etc/pki/internal/client.crt /etc/pki/internal/client.key
+          tls_trust_pool file {
+            pem_file /etc/pki/internal/ca.crt
+          }
         }
       }
     }
@@ -99,12 +108,24 @@ let
   upstreamBlocks = lib.concatMapStringsSep "\n" mkUpstreamBlock upstreams;
 
   # Caddyfile for the sidecar
+  # Inbound: :443 terminates mTLS with this container's own cert and
+  # requires a client cert signed by the internal CA, then proxies to the
+  # local service. Until 2026-10-20 this was a plain-HTTP :80 listener
+  # ("full TLS bypass for internal bridge traffic") while the outbound side
+  # dialled :443 — so the sidecar pair never actually spoke to each other
+  # and anything on the bridge could reach the service through :80.
   inboundBlock =
     if serverPort > 0 then
       ''
-        # Inbound: accept mTLS connections and proxy to local service
-        :80 {
-          # Full TLS Bypass for internal bridge traffic
+        :443 {
+          tls /etc/pki/internal/${name}.crt /etc/pki/internal/${name}.key {
+            client_auth {
+              mode require_and_verify
+              trust_pool file {
+                pem_file /etc/pki/internal/ca.crt
+              }
+            }
+          }
           reverse_proxy localhost:${toString serverPort} {
             header_up Host {upstream_hostport}
           }
@@ -315,10 +336,7 @@ in
 
             # mTLS Sidecar (only when there's inbound/outbound to proxy)
             (mkIf (hasTls && (serverPort > 0 || upstreams != [ ])) {
-              networking.firewall.allowedTCPPorts = lib.mkIf (serverPort > 0) [
-                80
-                443
-              ];
+              networking.firewall.allowedTCPPorts = lib.mkIf (serverPort > 0) [ 443 ];
 
               environment.systemPackages = [ pkgs.caddy ];
 
