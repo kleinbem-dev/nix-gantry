@@ -43,7 +43,7 @@ jobs:
       fail-fast: false
     runs-on: ${{ contains(matrix.system, 'aarch64') && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v7.0.1
       - uses: kleinbem/actions/nix-setup@d640cb482c1083235491da5ce469468a0019fc64 # v1.0.0
         with:
           nix-path: nixpkgs=channel:nixos-unstable
@@ -62,7 +62,7 @@ jobs:
           nix run .#publish-manifest -- \
             --flake-ref . --config "$config" --system "${{ matrix.system }}" \
             "${SUBST_ARGS[@]}" > fragment.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: manifest-fragment-${{ matrix.system }}
           path: fragment.json
@@ -71,7 +71,7 @@ jobs:
     needs: build-and-verify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: manifest-fragment-*
           path: fragments
