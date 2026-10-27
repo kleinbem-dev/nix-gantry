@@ -56,6 +56,9 @@
   enableVideo ? false,
   enableUSB ? false,
   additionalCapabilities ? [ ],
+  # Optional in-container periodic healthcheck probe.
+  # Takes an attrset: { cmd = "..."; interval = "1m"; timeout = "15s"; } or a string command.
+  healthCheck ? null,
 }:
 let
   inherit (lib) mkIf mkDefault;
@@ -165,6 +168,13 @@ let
   containerOctets = lib.splitString "." (lib.head (lib.splitString "/" cfg.ip));
   containerSubnetCidr = lib.concatStringsSep "." (lib.take 3 containerOctets ++ [ "0" ]) + "/24";
 
+  # ─── Host-side Egress Containment ───────────────────────────
+  hasEgress = cfg ? egress && cfg.egress ? restrictLan && cfg.egress.restrictLan;
+  containerIp = lib.head (lib.splitString "/" cfg.ip);
+  lanAllowlist = if cfg ? egress && cfg.egress ? lanAllowlist then cfg.egress.lanAllowlist else [ ];
+  allowlistRules = lib.concatMapStringsSep "\n          " (
+    ip: "ip saddr ${containerIp} ip daddr ${ip} accept"
+  ) lanAllowlist;
 in
 {
   containers.${name} = {
@@ -384,6 +394,32 @@ in
               ];
             })
 
+            # In-container periodic healthcheck probe
+            (mkIf (healthCheck != null) {
+              systemd.services."${name}-healthcheck" = {
+                description = "Healthcheck probe for ${name}";
+                serviceConfig = {
+                  Type = "oneshot";
+                  ExecStart =
+                    let
+                      hcCmd = if builtins.isString healthCheck then healthCheck else healthCheck.cmd;
+                    in
+                    "${pkgs.writeShellScript "${name}-healthcheck" hcCmd}";
+                  TimeoutSec =
+                    if builtins.isAttrs healthCheck && healthCheck ? timeout then healthCheck.timeout else "15s";
+                };
+              };
+              systemd.timers."${name}-healthcheck" = {
+                description = "Periodic healthcheck timer for ${name}";
+                wantedBy = [ "timers.target" ];
+                timerConfig = {
+                  OnBootSec = "30s";
+                  OnUnitActiveSec =
+                    if builtins.isAttrs healthCheck && healthCheck ? interval then healthCheck.interval else "1m";
+                };
+              };
+            })
+
             # Inject the user-provided config
             (if builtins.isFunction innerConfig then innerConfig args else innerConfig)
           ];
@@ -533,5 +569,20 @@ in
         }
       )
     ];
+  };
+
+  # Host-side egress containment (restricts outbound LAN access for untrusted/DMZ containers)
+  networking.nftables.tables = lib.optionalAttrs hasEgress {
+    "zt-${name}-egress" = {
+      family = "inet";
+      content = ''
+        chain forward {
+          type filter hook forward priority filter; policy accept;
+          ${allowlistRules}
+          ip saddr ${containerIp} ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } limit rate 6/minute log prefix "zt-${name}-egress drop: "
+          ip saddr ${containerIp} ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } drop
+        }
+      '';
+    };
   };
 }
