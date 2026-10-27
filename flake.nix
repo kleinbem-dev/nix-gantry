@@ -144,6 +144,9 @@
       flake = {
         lib = {
           mkContainer = import ./lib/factory.nix { inherit (inputs.nixpkgs) lib; };
+          tlsOptions = import ./lib/tls-options.nix;
+          oidcOptions = import ./lib/oidc-options.nix;
+          egressOptions = import ./lib/egress-options.nix;
         };
 
         nixosModules = {
