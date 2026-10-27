@@ -250,7 +250,7 @@ in
         { pkgs, ... }@args:
         {
           imports = [
-            (_: {
+            ({ options, ... }: {
               networking = {
                 hostName = cfg.hostName or name;
                 # Default route derived from THIS container's own address
@@ -303,13 +303,26 @@ in
               services.avahi = {
                 enable = true;
                 nssmdns4 = true;
-                publish = {
-                  enable = true;
-                  addresses = true;
-                  workstation = true;
-                };
                 openFirewall = true;
-              };
+              }
+              // (
+                if (options.services.avahi ? settings) then
+                  {
+                    settings.publish = {
+                      "disable-publishing" = false;
+                      publish-addresses = true;
+                      publish-workstation = true;
+                    };
+                  }
+                else
+                  {
+                    publish = {
+                      enable = true;
+                      addresses = true;
+                      workstation = true;
+                    };
+                  }
+              );
 
               system.stateVersion = mkDefault "25.11";
 
@@ -412,6 +425,34 @@ in
       // (lib.optionalAttrs nesting {
         "/dev/fuse" = {
           hostPath = "/dev/fuse";
+          isReadOnly = false;
+        };
+      })
+      // (lib.optionalAttrs enableGPU {
+        "/dev/dri" = {
+          hostPath = "/dev/dri";
+          isReadOnly = false;
+        };
+      })
+      // (lib.optionalAttrs enableAudio {
+        "/dev/snd" = {
+          hostPath = "/dev/snd";
+          isReadOnly = false;
+        };
+      })
+      // (lib.optionalAttrs enableVideo {
+        "/dev/video0" = {
+          hostPath = "/dev/video0";
+          isReadOnly = false;
+        };
+        "/dev/video1" = {
+          hostPath = "/dev/video1";
+          isReadOnly = false;
+        };
+      })
+      // (lib.optionalAttrs enableUSB {
+        "/dev/bus/usb" = {
+          hostPath = "/dev/bus/usb";
           isReadOnly = false;
         };
       })
