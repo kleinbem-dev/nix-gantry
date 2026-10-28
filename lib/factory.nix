@@ -578,6 +578,9 @@ in
       content = ''
         chain forward {
           type filter hook forward priority filter; policy accept;
+          # Replies to connections from outside (Caddy on another host) must
+          # pass, or the drops below cut every inbound request.
+          ip saddr ${containerIp} ct state { established, related } accept
           ${allowlistRules}
           ip saddr ${containerIp} ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } limit rate 6/minute log prefix "zt-${name}-egress drop: "
           ip saddr ${containerIp} ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } drop

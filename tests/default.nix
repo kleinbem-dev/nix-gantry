@@ -1,5 +1,5 @@
 # Test matrix for the pull-side mechanism (lib.mkContainer +
-# nixosModules.updater/.host). Three checks:
+# nixosModules.updater/.host). Four checks:
 #
 #   happy-path      full VM integration test: manifest fetch -> realise
 #                   -> symlink swap -> container start, on a REAL
@@ -13,6 +13,8 @@
 #                   have): confirms usesPodman wires the storage bind
 #                   mount, CAP_BPF, and /dev/fuse device that authentik's
 #                   real "no space left on device" incident depended on.
+#   egress-replies  pure eval-level check: egress containment lets replies
+#                   to inbound connections out before its LAN drop.
 {
   pkgs,
   self,
@@ -232,6 +234,37 @@ in
           ""
         else
           throw "usesPodman: missing tmpfiles rule pre-creating hostDataDir/containers"
+      }
+      touch $out
+    '';
+
+  # Pure eval-level check: the egress containment must let replies to
+  # inbound connections out before it drops LAN-bound traffic, or a
+  # contained container behind Caddy on another host answers nothing (502).
+  egress-replies =
+    let
+      built = self.lib.mkContainer {
+        config = {
+          my.services.container-updater.containers = [ ];
+        };
+        name = "demo-egress";
+        cfg = {
+          ip = "10.233.3.2/24";
+          hostBridge = "cbr0";
+          egress.restrictLan = true;
+        };
+      };
+      content = built.networking.nftables.tables.zt-demo-egress-egress.content;
+      position = needle: lib.stringLength (lib.head (lib.splitString needle content));
+      replies = "ct state { established, related } accept";
+    in
+    pkgs.runCommand "nix-gantry-egress-replies-check" { } ''
+      ${if lib.hasInfix replies content then "" else throw "egress: no established/related accept"}
+      ${
+        if position replies < position "} drop" then
+          ""
+        else
+          throw "egress: the LAN drop comes before the established/related accept"
       }
       touch $out
     '';
