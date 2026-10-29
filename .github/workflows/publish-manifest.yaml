@@ -10,7 +10,7 @@ name: Publish container manifest
 #
 #   jobs:
 #     publish-manifest:
-#       uses: kleinbem/nix-gantry/.github/workflows/publish-manifest.yaml@main
+#       uses: kleinbem-dev/nix-gantry/.github/workflows/publish-manifest.yaml@main
 #       with:
 #         configs: '{"x86_64-linux": "container-factory", "aarch64-linux": "container-factory-aarch64"}'
 #         substituters: "https://cache.nixos.org https://cache.example.dev/system"
