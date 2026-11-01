@@ -1,12 +1,8 @@
 name: Publish container manifest
 
-# Reusable workflow: builds each system's containers from a
-# nixosConfiguration, verifies cache presence, assembles the
-# {rev, generated, systems} manifest that modules/updater.nix consumes,
-# and publishes it as a GitHub release asset (a single rolling tag,
-# overwritten in place on every run).
-#
-# Call from a consumer repo's own workflow:
+# Reusable workflow: build each system's containers, assemble the
+# {rev, generated, systems} manifest modules/updater.nix reads, and upload it
+# to a rolling release tag (overwritten on every run). Call it like this:
 #
 #   jobs:
 #     publish-manifest:

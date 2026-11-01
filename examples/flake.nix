@@ -24,17 +24,10 @@
           system.stateVersion = "25.11";
         };
 
-      # A minimal container preset, following the my.containers.<name>
-      # convention nix-gantry's modules expect. A real preset declares
-      # its own options.my.containers.<name>; this quickstart inlines
-      # it for brevity.
-      #
-      # Imports the WHOLE mkContainer return value, not just its
-      # `.containers` key -- it also carries
-      # systemd.services."container@hello".unitConfig (ConditionPathExists,
-      # StartLimitBurst, Restart=on-failure) as a sibling top-level key.
-      # Extracting only `.containers` silently drops that and lets
-      # container@ race its own boot-time start against staging.
+      # A minimal inline preset (a real one declares options.my.containers.<name>).
+      # Import the whole mkContainer result, not just `.containers`: the
+      # container@ unitConfig (ConditionPathExists, restart limits) is a sibling
+      # key, and without it container@ starts before anything is staged.
       demoContainer = {
         imports = [
           (
@@ -53,13 +46,9 @@
         ];
       };
 
-      # Built in isolated (non-standalone) mode -- no
-      # my.services.container-updater registration in scope, so
-      # mkContainer's isStandalone resolves false and .path is a real,
-      # buildable closure. This is what CI does for you in production
-      # via .github/workflows/publish-manifest.yaml; this quickstart
-      # just does it inline so it's runnable with zero external
-      # infrastructure.
+      # Factory build: no container-updater registration here, so isStandalone
+      # is false and .path is a real closure. In production CI does this
+      # (.github/workflows/publish-manifest.yaml).
       factoryEval = lib.nixosSystem {
         inherit system;
         modules = [ demoContainer ];
@@ -89,10 +78,8 @@
             subnet = "10.233.1.0/24";
             hostAddress = "10.233.1.1";
             manifestUrl = "file://${manifestFile}";
-            # enablePersistence defaults to false and the bridge
-            # interface is created automatically -- nothing else needed
-            # here. See README's "External requirements" for what's
-            # genuinely still on you (none of it, for this minimal case).
+            # enablePersistence defaults to false and the bridge is created
+            # automatically. See README's "External requirements".
           };
 
           my.services.container-updater.containers = [ "hello" ];
@@ -107,12 +94,8 @@
           inherit system;
           modules = [ host ];
         };
-        # Exposed purely so CI can test apps.publish-manifest against a
-        # real, buildable containers.<name>.path -- see
-        # ../.github/workflows/ci.yaml. Not part of the quickstart story
-        # itself; a real consumer's CI targets their own factory-mode
-        # nixosConfiguration the same way (isolated, non-standalone
-        # build, exactly like `factoryEval` above).
+        # Only for CI (../.github/workflows/ci.yaml), which runs
+        # apps.publish-manifest against this factory-mode config.
         quickstart-factory = factoryEval;
       };
     };
