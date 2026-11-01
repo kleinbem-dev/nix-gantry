@@ -21,16 +21,10 @@
           ...
         }:
         let
-          # Options reference generation: evaluate the three modules as
-          # part of a real (if minimal) nixosSystem, so the standard
-          # namespaces they read/write (containers, networking, systemd,
-          # environment.etc) come from the real NixOS module set instead
-          # of needing individual shims -- only my.containers/my.network
-          # (this fleet's own convention) and environment.persistence
-          # (the external impermanence module) are genuinely outside
-          # both this flake and nixpkgs (see each module's header
-          # comment) and need stubbing; my.services.container-updater.*
-          # comes from updater.nix itself, already in the module set.
+          # Options doc: evaluate the modules in a minimal nixosSystem so the
+          # standard namespaces are real. Only my.containers, my.network and
+          # environment.persistence (impermanence) are declared outside this
+          # flake and nixpkgs, so they get stubs.
           allOptions =
             (inputs.nixpkgs.lib.nixosSystem {
               inherit (pkgs.stdenv.hostPlatform) system;
@@ -50,9 +44,7 @@
                       default = { };
                       description = "Doc-generation stub for your own fleet-wide network config -- not declared by this flake.";
                     };
-                    # Genuinely external (the impermanence module, not
-                    # part of nixpkgs) -- everything else here comes
-                    # from the real NixOS module set via nixosSystem.
+                    # From the external impermanence module.
                     environment.persistence = lib.mkOption {
                       type = lib.types.attrsOf lib.types.attrs;
                       default = { };
@@ -63,9 +55,7 @@
                 }
               ];
             }).options;
-          # nixosSystem pulls in the whole NixOS option tree (hundreds
-          # of unrelated options); only render what this flake actually
-          # declares.
+          # Render only this flake's options, not the whole NixOS tree.
           optionsDoc = pkgs.nixosOptionsDoc {
             options = {
               my = {
@@ -81,9 +71,7 @@
           packages.options-doc = optionsDoc.optionsCommonMark;
 
           checks = {
-            # Hand-rolled in place of git-hooks.nix (removed as a flake
-            # input -- this was its only use, and running the same four
-            # tools directly needs no external dependency at all).
+            # The four linters run directly, no git-hooks.nix input needed.
             lint =
               pkgs.runCommandLocal "nix-gantry-lint"
                 {
@@ -152,8 +140,7 @@
         nixosModules = {
           updater = import ./modules/updater.nix;
           host = import ./modules/host.nix;
-          # Not part of `default` -- opt-in only, alongside your own
-          # impermanence import. See its header comment.
+          # Not in `default`: opt-in, alongside your own impermanence import.
           host-persistence = import ./modules/host-persistence.nix;
           default.imports = [
             ./modules/updater.nix

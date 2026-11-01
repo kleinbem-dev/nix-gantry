@@ -1,20 +1,11 @@
-# Test matrix for the pull-side mechanism (lib.mkContainer +
-# nixosModules.updater/.host). Four checks:
-#
-#   happy-path      full VM integration test: manifest fetch -> realise
-#                   -> symlink swap -> container start, on a REAL
-#                   container closure built the same way container-factory
-#                   builds one (isStandalone=false at build time).
-#   bad-manifest    VM integration test: a missing/unfetchable manifest
-#                   fails the stage step safely, without crash-looping
-#                   past container@'s StartLimitBurst guard.
-#   podman-nesting  pure eval-level structural check (no VM -- a podman
-#                   image pull needs network access NixOS VM tests don't
-#                   have): confirms usesPodman wires the storage bind
-#                   mount, CAP_BPF, and /dev/fuse device that authentik's
-#                   real "no space left on device" incident depended on.
-#   egress-replies  pure eval-level check: egress containment lets replies
-#                   to inbound connections out before its LAN drop.
+# Tests for lib.mkContainer + nixosModules.updater/.host:
+#   happy-path      VM: manifest fetch -> realise -> symlink swap -> start,
+#                   on a real factory-built closure.
+#   bad-manifest    VM: an unfetchable manifest fails staging and the
+#                   container stays stopped.
+#   podman-nesting  eval only (VM tests have no network for image pulls):
+#                   usesPodman wires the storage mount, CAP_BPF, /dev/fuse.
+#   egress-replies  eval only: egress replies are accepted before the LAN drop.
 {
   pkgs,
   self,
@@ -24,13 +15,8 @@
 let
   inherit (pkgs) system;
 
-  # Minimal option shim a bare NixOS eval needs before it can import
-  # nixosModules.host: it writes my.network.subnet/hostAddress (for
-  # other fleet modules to read back, not consumed by this flake
-  # itself), so something has to declare them. No my.network.bridge or
-  # environment.persistence stub needed anymore -- lib.mkContainer takes
-  # hostBridge/gpuRenderNode directly on cfg now (see lib/factory.nix's
-  # header comment), and enablePersistence defaults to false.
+  # nixosModules.host writes my.network.subnet/hostAddress for other modules to
+  # read, but this flake doesn't declare them.
   shimModule =
     { lib, ... }:
     {
@@ -49,13 +35,7 @@ let
   demoCfg = {
     ip = "10.233.1.2/24";
     hostBridge = "cbr0";
-    # The real-world default. A prior version of this test set this to
-    # false to sidestep an apparent boot-time race against
-    # container-updater-bootstrap -- that turned out to be a bug in the
-    # test itself (see mkHostNode's `imports` comment), not in the
-    # module: ConditionPathExists correctly gates container@ from
-    # starting before staging, once the test actually wires up the full
-    # mkContainer return value instead of just `.containers`.
+    # ConditionPathExists keeps container@ from starting before staging.
     autoStart = true;
   };
 
@@ -63,11 +43,8 @@ let
     system.stateVersion = "25.11";
   };
 
-  # Built once, in isolated (non-standalone) mode: no my.services.container-updater
-  # registration in scope, so mkContainer's isStandalone resolves false and
-  # .path is a real, buildable NixOS system closure -- exactly how
-  # container-factory builds a container's closure for real (standaloneRunner
-  # forced off at the factory call site; here it's just never turned on).
+  # Factory build: no container-updater registration, so isStandalone is false
+  # and .path is a real, buildable closure.
   demoFactoryEval = inputs.nixpkgs.lib.nixosSystem {
     inherit system;
     modules = [
@@ -103,10 +80,8 @@ let
     }
   );
 
-  # The "host" node: a real deployment target, with demo registered as
-  # standalone (isStandalone=true -> .path is the runtime symlink the
-  # updater swaps) -- the same container definition as demoFactoryEval,
-  # just evaluated in a different context.
+  # Host node: the same container, registered as standalone, so .path is the
+  # symlink the updater swaps.
   mkHostNode =
     { manifestUrl }:
     {
@@ -114,20 +89,9 @@ let
         self.nixosModules.host
         self.nixosModules.updater
         shimModule
-        # The WHOLE return value of mkContainer, not just `.containers` --
-        # it also carries systemd.services."container@demo".unitConfig
-        # (ConditionPathExists, StartLimitBurst, Restart=on-failure) and
-        # tmpfiles rules as sibling top-level keys. Extracting only
-        # `.containers` (as an earlier version of this test did) silently
-        # drops ConditionPathExists, which is exactly why a first draft of
-        # this test saw container@demo hit real "No such file or
-        # directory" exit-code failures instead of gracefully skipping
-        # via the condition -- confirmed live via a dedicated diagnostic
-        # test (ConditionResult=yes with no ConditionPathExists= at all in
-        # `systemctl cat`). Real presets merge the full return value the
-        # same way (see nix-presets/containers/*.nix's `mkMerge [
-        # (self.lib.mkContainer {...}) {...} ]` pattern) -- this was a
-        # test-harness bug, not a bug in the module itself.
+        # The whole mkContainer result, not just `.containers`: the container@
+        # unitConfig (ConditionPathExists, restart limits) and tmpfiles rules are
+        # sibling keys. Without them container@demo fails instead of being skipped.
         (
           { config, ... }:
           self.lib.mkContainer {
@@ -144,8 +108,6 @@ let
         subnet = "10.233.1.0/24";
         hostAddress = "10.233.1.1";
         inherit manifestUrl;
-        # enablePersistence and the bridge interface both default
-        # correctly now -- nothing to override here.
       };
 
       my.services.container-updater.containers = [ "demo" ];

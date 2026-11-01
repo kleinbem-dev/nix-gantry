@@ -18,17 +18,10 @@ jobs:
           # absent (fork PRs, Dependabot).
           netbird-setup-key: ${{ secrets.NETBIRD_SETUP_KEY_EPHEMERAL }}
           attic-token: ${{ secrets.ATTIC_PULL_TOKEN }}
-      # nix flake check's checks.lint derivation already enforces
-      # formatting (the nixfmt check) -- no separate `nix fmt` step
-      # needed, and `formatter` here is a raw nixfmt-rfc-style, not a
-      # treefmt wrapper, so it has no --fail-on-change flag to invoke
-      # anyway.
+      # checks.lint already runs nixfmt --check, so no separate `nix fmt` step.
       - run: nix flake check -L
-      # apps.publish-manifest can't be exercised inside a sandboxed nix
-      # build (it shells out to `nix build`/`nix eval` itself, which
-      # needs recursive-nix), so it's tested here in real CI instead,
-      # against examples/'s isolated factory build -- exactly the shape
-      # a real consumer's own manifest-publishing CI targets.
+      # publish-manifest runs nix itself, which a sandboxed check can't
+      # (no recursive nix), so it's tested here against examples/.
       - name: Test apps.publish-manifest against the example flake
         run: |
           cd examples

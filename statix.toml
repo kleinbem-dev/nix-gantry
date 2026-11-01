@@ -1,6 +1,3 @@
-# W04 (manual_inherit_from) false-positives on `attr = cfg.attr or default;`
-# fallback idioms -- it can't tell an `or`-guarded default apart from a
-# plain repeat-the-name assignment, and `inherit` can't express a
-# fallback default anyway. Disabled repo-wide rather than fought
-# per-line.
+# manual_inherit_from flags `attr = cfg.attr or default;`, which `inherit`
+# can't express.
 disabled = ["manual_inherit_from"]

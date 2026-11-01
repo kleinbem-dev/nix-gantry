@@ -1,27 +1,13 @@
 #!/usr/bin/env bash
-# publish-manifest: build one system's worth of containers from a
-# nixosConfiguration's `config.containers` attrset, verify each store
-# path is actually present in your binary cache(s), and emit a JSON
-# fragment `{ "<system>": { "<container>": "<store-path>", ... } }` on
-# stdout. A container whose path isn't cache-verified yet is silently
-# dropped from the fragment rather than failing the whole run -- it'll
-# show up once a later run finds it cached.
-#
-# This is the "build + verify" half of the manifest pipeline. See
-# ../.github/workflows/publish-manifest.yaml for the reusable workflow
-# that runs this per-system, merges the fragments into the full
-# {rev, generated, systems} manifest, and publishes it as a GitHub
-# release asset via `gh release`.
+# publish-manifest: build one system's containers from a nixosConfiguration's
+# `config.containers` and print { "<system>": { "<name>": "<store-path>" } }.
+# A container that fails to build or isn't cache-reachable is skipped (logged
+# to stderr) instead of failing the run. ../.github/workflows/publish-manifest.yaml
+# merges the per-system fragments and publishes the manifest.
 #
 # Usage:
 #   publish-manifest --flake-ref <ref> --config <nixosConfiguration-name> \
 #     --system <system> [--substituter <url> ...]
-#
-# Example:
-#   nix run .#publish-manifest -- \
-#     --flake-ref . --config container-factory --system x86_64-linux \
-#     --substituter https://cache.nixos.org \
-#     --substituter https://cache.example.dev/system
 set -euo pipefail
 
 FLAKE_REF=""

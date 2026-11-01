@@ -1,16 +1,8 @@
-# mkContainer: build a NixOS containers.<name> block that is either
-# embedded (evaluated as part of the host's own generation, the default)
-# or "standalone" -- its `.path` points at a live symlink
-# (/var/lib/machines/<name>/current) that modules/updater.nix swaps
-# atomically, decoupling this container's updates from the host's own
-# nixos-rebuild cadence entirely. See ../README.md for the full picture.
-#
-# No external option-path dependencies: `cfg.hostBridge` and (when
-# enableGPU = true) `cfg.gpuRenderNode` are required fields on `cfg`
-# itself, not read from any config path this flake doesn't declare. A
-# wrapper that wants to default these from its own config (e.g. a
-# fleet-wide `config.my.network.bridge`) can do so at the call site --
-# see nix-presets' own mkContainer re-export for that pattern.
+# mkContainer: build a NixOS containers.<name> block, either embedded in the
+# host's generation (default) or standalone: `.path` is the symlink
+# /var/lib/machines/<name>/current, which modules/updater.nix swaps atomically.
+# `cfg.hostBridge` (and `cfg.gpuRenderNode` with enableGPU) are required on cfg;
+# a wrapper can default them from its own config at the call site.
 { lib }:
 {
   name,
@@ -20,35 +12,16 @@
   bindMounts ? { },
   timeout ? null,
   enableNesting ? false,
-  # Bundles the boilerplate every podman-in-nspawn preset (anythingllm,
-  # agent-zero, ente, authentik) was hand-duplicating: implies
-  # enableNesting, sets a 15m start timeout (image pulls blow the 90s
-  # default), configures podman's own unqualified-search-registries
-  # (without it, a short image name fails outright), and — the part that
-  # was missing from every one of them until it crash-looped authentik
-  # into "no space left on device" — bind-mounts podman's image/layer
-  # storage onto real host disk instead of the container's own fixed 2G
-  # ephemeral tmpfs root.
+  # Podman-in-nspawn: implies enableNesting, a 15m start timeout (image pulls
+  # outlast 90s), unqualified-search-registries, and podman storage on host
+  # disk instead of the ephemeral tmpfs root (needs cfg.hostDataDir).
   usesPodman ? false,
-  # Subdirectories of cfg.hostDataDir that must pre-exist on the HOST
-  # before nspawn starts, because a bind mount doesn't auto-create a
-  # missing host-side directory. Every caller with a nested persistent
-  # service (postgres, etc.) was hand-rolling this via a
-  # `lib.recursiveUpdate (mkContainer {...}) { systemd.services."container@X"
-  # .preStart = "mkdir -p ..."; }` wrapper (authentik.nix, paperless.nix,
-  # syncthing.nix) — same class of bug as usesPodman's storage mount:
-  # easy to forget, silently breaks first boot. List plain subdir names,
-  # e.g. `subDirs = [ "postgresql" ];` for `${cfg.hostDataDir}/postgresql`.
+  # Subdirectories of cfg.hostDataDir created on the host before nspawn starts
+  # (bind mounts don't create a missing host dir), e.g. [ "postgresql" ].
   subDirs ? [ ],
-  # A host-side env/secrets file to bind-mount read-only into the
-  # container. ~12 presets were hand-rolling the identical
-  # `bindMounts = lib.optionalAttrs (cfg.secretsFile != null) { "/run/secrets/
-  # <name>.env" = { hostPath = cfg.secretsFile; isReadOnly = true; }; };`
-  # block (the option declaration + wiring it into the specific service's
-  # environmentFile/environmentFiles field stays per-preset — that varies
-  # too much to generalize). Defaults the in-container path to
-  # /run/secrets/${name}.env; override with secretsFilePath for a preset
-  # whose service expects a different path (e.g. attic's /etc/atticd-env).
+  # Host-side env/secrets file, bind-mounted read-only at /run/secrets/<name>.env
+  # (or secretsFilePath). Wiring it into the service's environmentFile stays
+  # with the caller.
   secretsFile ? null,
   secretsFilePath ? null,
   enableGPU ? false,
@@ -63,10 +36,7 @@
 let
   inherit (lib) mkIf mkDefault;
 
-  # usesPodman implies enableNesting (every current podman-in-nspawn
-  # caller was already setting both) — nested computed as one value so
-  # the rest of the file doesn't need to know about usesPodman at all
-  # except where it adds its own extra bits (registries, storage mount).
+  # usesPodman implies enableNesting.
   nesting = enableNesting || usesPodman;
   effectiveTimeout = if timeout != null then timeout else (if usesPodman then "15m" else "90s");
   # usesPodman's own storage dir rides the same subDirs mechanism instead
@@ -83,15 +53,9 @@ let
 
   pkiDir = "/nix/persist/pki/internal";
 
-  # Generate Caddy upstream blocks: localhost:remotePort → remote mTLS
-  # Outbound: localhost:<port> → <target>:443, mutually authenticated.
-  # The server cert is verified against the internal CA (its SAN carries
-  # the upstream's inventory name, hence tls_server_name) and this
-  # container presents the shared client cert. Both files are bind-mounted
-  # from /nix/persist/pki/internal by the bindMounts block below.
-  # `tls_insecure_skip_verify` ("temporary bypass to unblock testing") lived
-  # here until 2026-10-20 — with it, every flow labelled mTLS in
-  # zero-trust.nix was plain TLS to whoever answered on that IP.
+  # Outbound: localhost:<port> -> <target>:443 over mTLS. The server cert is
+  # checked against the internal CA by its SAN (the upstream's name, hence
+  # tls_server_name); this container presents the shared client cert.
   mkUpstreamBlock = upstream: ''
     :${toString upstream.port} {
       reverse_proxy ${upstream.target}:443 {
@@ -110,13 +74,8 @@ let
 
   upstreamBlocks = lib.concatMapStringsSep "\n" mkUpstreamBlock upstreams;
 
-  # Caddyfile for the sidecar
-  # Inbound: :443 terminates mTLS with this container's own cert and
-  # requires a client cert signed by the internal CA, then proxies to the
-  # local service. Until 2026-10-20 this was a plain-HTTP :80 listener
-  # ("full TLS bypass for internal bridge traffic") while the outbound side
-  # dialled :443 — so the sidecar pair never actually spoke to each other
-  # and anything on the bridge could reach the service through :80.
+  # Inbound: :443 terminates mTLS with this container's cert, requires a client
+  # cert from the internal CA, then proxies to the local service.
   inboundBlock =
     if serverPort > 0 then
       ''
@@ -156,15 +115,8 @@ let
     (builtins.elem name updaterList)
     || (cfg.standaloneRunner or config.my.containers.standaloneRunner or false);
 
-  # This container's own /24, derived from cfg.ip — NOT a hardcoded
-  # build-host subnet. Shared by defaultGateway below and the zt-factory
-  # egress rule: a standalone closure is built once but runs on whichever
-  # host deploys it (mac-mini/.50, core-pi/.48, hass-pi/.49, nasbook/.47),
-  # so anything derived from the *build* host's own subnet is wrong on
-  # every other host. Same class of bug as the defaultGateway fix below
-  # (confirmed live 2026-08-05): a zero-trust egress rule hardcoded to
-  # 10.85.46.0/24 would block a container's own default-gateway hop
-  # (10.85.50.1, etc.) on any host other than the factory's own .46.
+  # The container's own /24, from cfg.ip. A standalone closure is built once and
+  # runs on any host, so nothing may come from the build host's subnet.
   containerOctets = lib.splitString "." (lib.head (lib.splitString "/" cfg.ip));
   containerSubnetCidr = lib.concatStringsSep "." (lib.take 3 containerOctets ++ [ "0" ]) + "/24";
 
@@ -184,13 +136,8 @@ in
     hostBridge = cfg.hostBridge;
     localAddress = cfg.ip;
     privateUsers = cfg.privateUsers or "no";
-    # THE actual extension point nixpkgs reads (nixos-containers.nix:
-    # "TimeoutStartSec = cfg.timeoutStartSec;", a plain non-priority
-    # assignment) — NOT systemd.services."container@${name}"
-    # .serviceConfig.TimeoutStartSec below, which turned out to never
-    # actually win against it regardless of mkDefault/mkForce. Confirmed
-    # live 2026-08-05 after that override silently did nothing for every
-    # container using this factory, including monitoring.nix's "5m".
+    # Set the timeout here: nixos-containers assigns TimeoutStartSec from this
+    # option, and a serviceConfig.TimeoutStartSec override on container@ never wins.
     timeoutStartSec = effectiveTimeout;
 
     # Conditionally allow hardware device pass-through
@@ -236,13 +183,8 @@ in
         "CAP_SYS_ADMIN"
         "CAP_MKNOD"
         "CAP_SETFCAP"
-        # crun's cgroup-v2 device management uses eBPF by default in
-        # modern podman/crun — CAP_SYS_ADMIN alone doesn't cover it on
-        # current kernels (that grant was folded into CAP_BPF as
-        # capabilities got split out). Without it: "crun: bpf create ``:
-        # Operation not permitted: OCI permission denied", confirmed live
-        # 2026-08-05 on agent-zero/anythingllm (both enableNesting-style
-        # nested-podman containers).
+        # crun's cgroup-v2 device control uses eBPF; without CAP_BPF it fails with
+        # "crun: bpf create ``: Operation not permitted".
         "CAP_BPF"
       ])
       ++ additionalCapabilities
@@ -263,27 +205,13 @@ in
             ({ options, ... }: {
               networking = {
                 hostName = cfg.hostName or name;
-                # Default route derived from THIS container's own address
-                # (.1 of its /24), NOT the build host's bridge IP. A
-                # standalone closure is built once by container-factory but
-                # runs on whichever host deploys it; baking the factory's
-                # `config.my.network.hostAddress` (10.85.46.1) made every
-                # container deployed off the .46 subnet (mac-mini/.50,
-                # core-pi/.48, hass-pi/.49, nasbook/.47) route its replies
-                # to a gateway that doesn't exist there — unreachable
-                # cross-host and no internet egress. Every fleet container
-                # host is .1 of its container /24, so this is exact.
+                # .1 of the container's own /24, not the build host's bridge IP:
+                # a standalone closure runs on hosts other than the one that built
+                # it. Assumes the host is .1 of its container /24.
                 defaultGateway = lib.mkForce (lib.concatStringsSep "." (lib.take 3 containerOctets ++ [ "1" ]));
-                # NOT config.my.network.hostAddress: nothing on ANY host in
-                # the fleet actually answers DNS on the container-bridge
-                # gateway address (systemd-resolved only binds loopback +
-                # the NetBird interface) — every container's fallback
-                # nameserver has been silently pointing at a dead end.
-                # Routing/NAT/egress through the host all work fine
-                # (confirmed live 2026-08-05: a container reaches the
-                # internet over IP without issue) — only DNS specifically
-                # was broken, so query public resolvers directly instead of
-                # relying on the host to forward.
+                # Public resolvers, not the bridge gateway: nothing answers DNS on
+                # the host's bridge address (systemd-resolved binds loopback and
+                # NetBird only).
                 nameservers = lib.mkForce [
                   "1.1.1.1"
                   "8.8.8.8"
@@ -493,13 +421,9 @@ in
         };
       })
       // (lib.optionalAttrs usesPodman {
-        # Podman's own image/layer storage. The container's root ("/") is
-        # a fixed 2G ephemeral tmpfs regardless of memoryLimit — without
-        # this, podman unpacks pulled images straight into that 2G tmpfs
-        # and eventually hits "no space left on device", crash-looping
-        # forever (confirmed live 2026-09-21 on authentik: restart
-        # counter 42+, 18GB+ of repeated failed-pull traffic before this
-        # was added). Requires cfg.hostDataDir to be set.
+        # Podman image/layer storage on host disk. On the ephemeral tmpfs root,
+        # image pulls fill it ("no space left on device") and crash-loop.
+        # Requires cfg.hostDataDir.
         "/var/lib/containers" = {
           hostPath = "${cfg.hostDataDir}/containers";
           isReadOnly = false;
@@ -513,12 +437,9 @@ in
       });
   };
 
-  # Automatically create hostDataDir if defined. Ownership defaults to
-  # 1000:100 (martin:users — matches how most container services access
-  # their bind-mounted state). A preset whose inner unit cannot rely on
-  # CAP_DAC_OVERRIDE (e.g. crowdsec: upstream module strips ALL capabilities,
-  # so even User=root obeys plain permission bits) must own the dir instead —
-  # pass dataDirOwner/dataDirGroup in cfg.
+  # hostDataDir defaults to 1000:100. A service without CAP_DAC_OVERRIDE (e.g.
+  # crowdsec, whose module drops all capabilities) must own the dir: pass
+  # cfg.dataDirOwner/dataDirGroup.
   systemd.tmpfiles.rules =
     (lib.optionals (cfg ? hostDataDir && cfg.hostDataDir != null) [
       "d ${cfg.hostDataDir} 0755 ${toString (cfg.dataDirOwner or 1000)} ${
@@ -534,13 +455,8 @@ in
       } - -"
     ) effectiveSubDirs);
 
-  # Inject resource limits into the systemd unit on the host. Also self-heal:
-  # upstream nixos-containers leaves container@ at the systemd default
-  # (Restart=no), which used to be papered over by a bespoke polling daemon
-  # (workspace-guardian, single-host, 5-minute cycle) shelling out to
-  # `systemctl restart container@*`. Restart=on-failure here does the same
-  # job natively, fleet-wide, instantly — the StartLimit guard keeps a
-  # genuinely broken container from restart-looping forever silently.
+  # Resource limits, plus Restart=on-failure (nixos-containers leaves container@
+  # at Restart=no). The StartLimit guard stops a broken container looping forever.
   systemd.services."container@${name}" = {
     unitConfig = {
       StartLimitIntervalSec = 900;

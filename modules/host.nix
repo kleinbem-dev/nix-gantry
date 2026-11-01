@@ -1,9 +1,6 @@
-# Container Host Module
-#
-# Provides common setup for devices that host containers: networking
-# and wiring containers into nixosModules.updater. No external option
-# or module dependencies -- see ./host-persistence.nix for the
-# (separate, opt-in) impermanence wiring.
+# Container host: bridge, firewall and updater wiring. Sets my.network, which
+# your own config must declare. Impermanence wiring is opt-in, in
+# ./host-persistence.nix.
 #
 # Usage in host config:
 #
@@ -26,9 +23,7 @@
 #       ip = "10.85.48.5/24";
 #       hostDataDir = "/var/lib/caddy";
 #     };
-#     # ... more containers, each declared by your own container preset
-#     # (see ../lib/factory.nix), following the same my.containers.<name>
-#     # convention this module and mkContainer both assume.
+#     # ... more, each declared by your own preset (see ../lib/factory.nix)
 #   };
 
 {
@@ -101,10 +96,7 @@ in
       '';
     };
 
-    # Defaults to false. Also import nixosModules.host-persistence
-    # (alongside the external impermanence module) to use this -- see
-    # that module's header comment for why it's split out rather than
-    # just gated here.
+    # Needs nixosModules.host-persistence plus the impermanence module.
     enablePersistence = lib.mkEnableOption "Impermanence for container host";
   };
 
@@ -114,11 +106,8 @@ in
       inherit (cfg) subnet hostAddress;
     };
 
-    # Firewall rules below assume this bridge exists; create it (empty
-    # -- containers attach dynamically at start) if nothing else
-    # already has. mkDefault so a consumer who declares this bridge
-    # elsewhere (e.g. alongside libvirtd/podman networking) keeps
-    # their own definition untouched.
+    # Create the bridge empty (containers attach at start); mkDefault so a
+    # definition elsewhere wins.
     networking.bridges.${cfg.bridge}.interfaces = lib.mkDefault [ ];
 
     # ─── Firewall Rules for Container Traffic ───────────────────
@@ -136,26 +125,15 @@ in
     # ─── Container Auto-Update Orchestration (ADR 002) ──────────
     # Containers are decoupled from host generation and refreshed
     # nightly from CI-published manifest (eval-free on edge devices).
-    # NOTE: Requires services/container-updater.nix to be imported.
+    # Requires nixosModules.updater.
     my.services.container-updater = {
       enable = true;
       inherit (cfg) manifestUrl;
-      # Source from config.containers (the real nspawn instance names mkContainer
-      # produces), not config.my.containers (the my.containers.<option-name>
-      # keys) — a preset's mkContainer `name` can differ from its option name
-      # (e.g. `my.containers.dashboard` → container "dashboard-homepage"), and
-      # this list is matched against the real name by isStandalone in
-      # nix-presets/lib/factory.nix. Deriving from the option-name set instead
-      # silently left any such container permanently embedded, never pulled.
-      #
-      # excludeFromStandalone subtracts here, at the base list, because
-      # isStandalone matches against this exact list — a container that
-      # genuinely can't be factory-built (persona-runtime's attrsOf
-      # structural conflict) must never appear in it, or NixOS expects a
-      # manifest entry that will never exist. excludeFromUpdater does NOT
-      # subtract here — it only opts a container out of the *nightly* bulk
-      # restart (below); removing it from this base list would silently
-      # build it embedded again instead of pulled/cached.
+      # Real nspawn names from config.containers, not my.containers keys: a
+      # preset's container name can differ from its option name, and
+      # isStandalone in ../lib/factory.nix matches this list. Only
+      # excludeFromStandalone is subtracted here; excludeFromUpdater just skips
+      # the nightly run (removing it here would build it embedded again).
       containers = lib.subtractLists cfg.excludeFromStandalone (lib.attrNames config.containers);
       excludeFromNightly = cfg.excludeFromUpdater;
     };
