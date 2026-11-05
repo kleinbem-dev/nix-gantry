@@ -13,15 +13,14 @@
       default = defaultName;
       description = "OAuth2 Client ID registered with the OIDC identity provider";
     };
-    issuerUrl = lib.mkOption {
-      type = lib.types.str;
-      default =
-        if issuerUrl != null then
-          issuerUrl
-        else
-          "https://auth.kleinbem.dev/application/o/${defaultName}/.well-known/openid-configuration";
-      description = "OpenID Connect discovery endpoint URL";
-    };
+    # No fallback issuer: each consumer names its own identity provider.
+    issuerUrl = lib.mkOption (
+      {
+        type = lib.types.str;
+        description = "OpenID Connect discovery endpoint URL";
+      }
+      // lib.optionalAttrs (issuerUrl != null) { default = issuerUrl; }
+    );
     scopes = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [

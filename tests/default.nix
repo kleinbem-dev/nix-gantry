@@ -1,12 +1,16 @@
 # Tests for lib.mkContainer + nixosModules.updater/.host:
 #   happy-path      VM: manifest fetch -> realise -> symlink swap -> start,
-#                   on a real factory-built closure; the container journal
+#                   on a real factory-built closure; rollback without a
+#                   previous generation fails; a closure that doesn't start
+#                   is rolled back; the container journal
 #                   reaches the host, readable without root, across restarts.
-#   bad-manifest    VM: an unfetchable manifest fails staging and the
-#                   container stays stopped.
+#   bad-manifest    VM: an unfetchable manifest fails staging, the
+#                   container stays stopped and the nightly unit fails.
 #   podman-nesting  eval only (VM tests have no network for image pulls):
 #                   usesPodman wires the storage mount, CAP_BPF, /dev/fuse.
 #   egress-replies  eval only: egress replies are accepted before the LAN drop.
+#   tls-sidecar     eval + caddy adapt: upstream listeners bind loopback and
+#                   tls.airlock ends the output and forward chains in a reject.
 {
   pkgs,
   self,
@@ -73,6 +77,53 @@ let
     ];
   };
   demoClosure = demoFactoryEval.config.containers.demo.path;
+  # Not a NixOS system: a container started on it fails.
+  brokenClosure = pkgs.writeText "not-a-system" "";
+
+  # A factory-mode container with an inbound sidecar, one upstream and airlock.
+  mkTlsEval =
+    innerExtra:
+    inputs.nixpkgs.lib.nixosSystem {
+      inherit system;
+      modules = [
+        shimModule
+        (
+          { config, ... }:
+          {
+            inherit
+              (self.lib.mkContainer {
+                inherit config;
+                name = "demo-tls";
+                cfg = {
+                  ip = "10.233.4.2/24";
+                  hostBridge = "cbr0";
+                  tls = {
+                    enable = true;
+                    serverPort = 8080;
+                    upstreams = [
+                      {
+                        name = "api";
+                        target = "10.233.4.3";
+                        port = 4000;
+                      }
+                    ];
+                    airlock = true;
+                  };
+                };
+                innerConfig = {
+                  system.stateVersion = "25.11";
+                }
+                // innerExtra;
+              })
+              containers
+              ;
+            system.stateVersion = "25.11";
+          }
+        )
+      ];
+    };
+  tlsInner = (mkTlsEval { }).config.containers.demo-tls.config;
+  tlsInnerNoV6 = (mkTlsEval { networking.enableIPv6 = false; }).config.containers.demo-tls.config;
 
   manifestFile = pkgs.writeText "manifest.json" (
     builtins.toJSON {
@@ -126,6 +177,7 @@ let
       };
 
       networking.firewall.enable = false;
+      system.extraDependencies = [ brokenClosure ];
       system.stateVersion = "25.11";
     };
 in
@@ -150,6 +202,23 @@ in
       # already-running container is a separate behavior from the
       # stage/activate mechanism this test is about.)
       host.succeed("systemctl start --wait update-container@demo.service")
+
+      # One generation, no `previous`: rollback must fail and leave demo running.
+      host.fail("systemctl start --wait update-container-rollback@demo.service")
+      host.succeed("systemctl is-active container@demo.service")
+      # Nor may it "roll back" to a previous link that is the current closure.
+      host.succeed("ln -sfn ${demoClosure} /var/lib/machines/demo/previous")
+      host.fail("systemctl start --wait update-container-rollback@demo.service")
+      host.succeed("rm /var/lib/machines/demo/previous")
+
+      # A closure that fails to start is rolled back, not left selected.
+      profile = "/nix/var/nix/profiles/containers/demo"
+      host.succeed(f"nix-env --profile {profile} --set ${brokenClosure}")
+      host.fail("systemctl start --wait update-container-activate@demo.service")
+      host.succeed(f"test $(readlink -f {profile}) = ${demoClosure}")
+      host.wait_for_unit("container@demo.service")
+      # This test's restarts add up to container@'s start limit (5 per 15 min).
+      host.succeed("systemctl reset-failed container@demo.service")
 
       # The guest journal is forwarded to the host, readable by the
       # systemd-journal group, and keeps every boot of the ephemeral root:
@@ -201,6 +270,9 @@ in
       # crash-looping against a target that doesn't exist.
       host.fail("systemctl is-active container@demo.service")
       host.fail("test -e /var/lib/machines/demo/current")
+
+      # The nightly run reports the failed stage instead of exiting 0.
+      host.fail("systemctl start update-containers.service")
     '';
   };
 
@@ -274,4 +346,39 @@ in
       }
       touch $out
     '';
+
+  tls-sidecar =
+    let
+      text = tlsInner.environment.etc."caddy-sidecar/Caddyfile".text;
+      textNoV6 = tlsInnerNoV6.environment.etc."caddy-sidecar/Caddyfile".text;
+      caddyfile = pkgs.writeText "Caddyfile" text;
+      nft = tlsInner.networking.nftables.tables.zt-factory.content;
+    in
+    pkgs.runCommand "nix-gantry-tls-sidecar-check"
+      {
+        nativeBuildInputs = [
+          pkgs.caddy
+          pkgs.jq
+        ];
+      }
+      ''
+        ${
+          if lib.length (lib.splitString "reject with icmpx type admin-prohibited" nft) == 3 then
+            ""
+          else
+            throw "tls.airlock: output and forward chains must both reject"
+        }
+        ${
+          if lib.hasInfix "[::1]" text && !(lib.hasInfix "[::1]" textNoV6) then
+            ""
+          else
+            throw "tls upstream: [::1] must be bound exactly when IPv6 is on"
+        }
+        HOME=$TMPDIR caddy adapt --adapter caddyfile --config ${caddyfile} > adapted.json
+        # Every :4000 listener must be loopback, and there must be one.
+        jq -e '[.apps.http.servers[].listen[] | select(endswith(":4000"))]
+          | length > 0 and all(. == "127.0.0.1:4000" or . == "[::1]:4000")' adapted.json \
+          || { echo "upstream listener not loopback-only"; jq '[.apps.http.servers[].listen]' adapted.json; exit 1; }
+        touch $out
+      '';
 }

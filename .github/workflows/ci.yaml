@@ -6,11 +6,14 @@ on:
       - main
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: kleinbem/actions/nix-setup@7ec628296d5194e6e10031706387b992a10a1638 # v1.0.1
         with:
           nix-path: nixpkgs=channel:nixos-unstable
@@ -32,3 +35,10 @@ jobs:
           store_path=$(jq -er '.["x86_64-linux"]["hello"]' /tmp/fragment.json)
           echo "Got store path: $store_path"
           nix path-info "$store_path"
+          # hello was built here and no cache has it, so the cache check
+          # must drop it.
+          nix run ..#publish-manifest -- \
+            --flake-ref . --config quickstart-factory --system x86_64-linux \
+            --substituter https://cache.nixos.org > /tmp/cached.json
+          cat /tmp/cached.json
+          jq -e '.["x86_64-linux"] == {}' /tmp/cached.json

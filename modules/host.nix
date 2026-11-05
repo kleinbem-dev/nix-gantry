@@ -158,15 +158,5 @@ in
       containers = lib.subtractLists cfg.excludeFromStandalone (lib.attrNames config.containers);
       excludeFromNightly = cfg.excludeFromUpdater;
     };
-
-    # ─── Systemd Service Dependencies ────────────────────────────
-    # Ensure container networking is up before containers start
-    systemd.services = lib.mkIf (config.my.services.container-updater.enable or false) {
-      # Wait for cache availability before running container updates
-      "service-container-updater" = {
-        after = [ "network-online.target" ];
-        wants = [ "network-online.target" ];
-      };
-    };
   };
 }

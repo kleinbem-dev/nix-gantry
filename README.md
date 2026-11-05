@@ -67,8 +67,9 @@ they just pull what a beefier CI runner already built and cache-verified.
 - **`nixosModules.default`** — `updater` + `host` composed
   (`host-persistence` is opt-in, see above).
 - **`apps.publish-manifest`** — the CI-side half: builds a system's
-  containers from a `nixosConfiguration`, verifies each is actually
-  cache-reachable (drops anything that isn't rather than blocking), and
+  containers from a `nixosConfiguration`, verifies each is in one of the
+  `--substituter` caches you pass (drops anything that isn't rather than
+  blocking), and
   emits a manifest fragment. See
   [`.github/workflows/publish-manifest.yaml`](.github/workflows/publish-manifest.yaml)
   for the reusable workflow that runs this per-system and publishes the
@@ -93,6 +94,10 @@ rules for (`networking.bridges.<name>.interfaces = [ ]`, via
 and `enablePersistence` defaults to `false` — the external
 [`impermanence`](https://github.com/nix-community/impermanence) module
 is only required if you opt into it.
+
+With a tmpfs `/var`, persist `/var/lib/machines` yourself:
+`nixosModules.host-persistence` doesn't, and without the `current` links a
+reboot has to re-fetch the manifest before any standalone container starts.
 
 `lib.mkContainer` reads no option paths outside what you pass it
 directly: `cfg.hostBridge` is a required field (no fallback to a
