@@ -1,7 +1,8 @@
 # Tests for lib.mkContainer + nixosModules.updater/.host:
 #   happy-path      VM: manifest fetch -> realise -> symlink swap -> start,
 #                   on a real factory-built closure; rollback without a
-#                   previous generation fails; the container journal
+#                   previous generation fails; a closure that doesn't start
+#                   is rolled back; the container journal
 #                   reaches the host, readable without root, across restarts.
 #   bad-manifest    VM: an unfetchable manifest fails staging, the
 #                   container stays stopped and the nightly unit fails.
@@ -9,7 +10,7 @@
 #                   usesPodman wires the storage mount, CAP_BPF, /dev/fuse.
 #   egress-replies  eval only: egress replies are accepted before the LAN drop.
 #   tls-sidecar     eval + caddy adapt: upstream listeners bind loopback and
-#                   tls.airlock ends the output chain in a reject.
+#                   tls.airlock ends the output and forward chains in a reject.
 {
   pkgs,
   self,
@@ -76,6 +77,8 @@ let
     ];
   };
   demoClosure = demoFactoryEval.config.containers.demo.path;
+  # Not a NixOS system: a container started on it fails.
+  brokenClosure = pkgs.writeText "not-a-system" "";
 
   # A factory-mode container with an inbound sidecar, one upstream and airlock.
   tlsFactoryEval = inputs.nixpkgs.lib.nixosSystem {
@@ -168,6 +171,7 @@ let
       };
 
       networking.firewall.enable = false;
+      system.extraDependencies = [ brokenClosure ];
       system.stateVersion = "25.11";
     };
 in
@@ -196,6 +200,19 @@ in
       # One generation, no `previous`: rollback must fail and leave demo running.
       host.fail("systemctl start --wait update-container-rollback@demo.service")
       host.succeed("systemctl is-active container@demo.service")
+      # Nor may it "roll back" to a previous link that is the current closure.
+      host.succeed("ln -sfn ${demoClosure} /var/lib/machines/demo/previous")
+      host.fail("systemctl start --wait update-container-rollback@demo.service")
+      host.succeed("rm /var/lib/machines/demo/previous")
+
+      # A closure that fails to start is rolled back, not left selected.
+      profile = "/nix/var/nix/profiles/containers/demo"
+      host.succeed(f"nix-env --profile {profile} --set ${brokenClosure}")
+      host.fail("systemctl start --wait update-container-activate@demo.service")
+      host.succeed(f"test $(readlink -f {profile}) = ${demoClosure}")
+      host.wait_for_unit("container@demo.service")
+      # This test's restarts add up to container@'s start limit (5 per 15 min).
+      host.succeed("systemctl reset-failed container@demo.service")
 
       # The guest journal is forwarded to the host, readable by the
       # systemd-journal group, and keeps every boot of the ephemeral root:
@@ -330,16 +347,25 @@ in
       caddyfile = pkgs.writeText "Caddyfile" text;
       nft = tlsInner.networking.nftables.tables.zt-factory.content;
     in
-    pkgs.runCommand "nix-gantry-tls-sidecar-check" { nativeBuildInputs = [ pkgs.caddy ]; } ''
-      ${
-        if lib.hasInfix "reject with icmpx type admin-prohibited" nft then
-          ""
-        else
-          throw "tls.airlock: output chain does not reject"
+    pkgs.runCommand "nix-gantry-tls-sidecar-check"
+      {
+        nativeBuildInputs = [
+          pkgs.caddy
+          pkgs.jq
+        ];
       }
-      HOME=$TMPDIR caddy adapt --adapter caddyfile --config ${caddyfile} > adapted.json
-      grep -q '"127.0.0.1:4000"' adapted.json || { echo "upstream listener not on loopback"; exit 1; }
-      if grep -q '":4000"' adapted.json; then echo "upstream listener on all interfaces"; exit 1; fi
-      touch $out
-    '';
+      ''
+        ${
+          if lib.length (lib.splitString "reject with icmpx type admin-prohibited" nft) == 3 then
+            ""
+          else
+            throw "tls.airlock: output and forward chains must both reject"
+        }
+        HOME=$TMPDIR caddy adapt --adapter caddyfile --config ${caddyfile} > adapted.json
+        # Every :4000 listener must be loopback, and there must be one.
+        jq -e '[.apps.http.servers[].listen[] | select(endswith(":4000"))]
+          | length > 0 and all(. == "127.0.0.1:4000" or . == "[::1]:4000")' adapted.json \
+          || { echo "upstream listener not loopback-only"; jq '[.apps.http.servers[].listen]' adapted.json; exit 1; }
+        touch $out
+      '';
 }

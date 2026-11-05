@@ -12,6 +12,7 @@ name: Publish container manifest
 #       with:
 #         configs: '{"x86_64-linux": "container-factory", "aarch64-linux": "container-factory-aarch64"}'
 #         substituters: "https://cache.nixos.org https://cache.example.dev/system"
+#         trusted-public-keys: "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= system:..."
 #         release-tag: "container-manifest"
 #       secrets: inherit
 
@@ -26,6 +27,11 @@ on:
         description: "Space-separated binary cache URLs; a container goes into the manifest only if one of them has it (empty skips the check). This workflow pushes nothing."
         required: true
         type: string
+      trusted-public-keys:
+        description: "Space-separated keys your hosts trust (their nix.conf trusted-public-keys); every closure path must be signed by one. Empty checks presence only."
+        required: false
+        type: string
+        default: ""
       release-tag:
         description: "GitHub release tag the manifest is published to (created if missing, overwritten if present)"
         required: false
@@ -75,6 +81,7 @@ jobs:
           SUBSTITUTERS: ${{ inputs.substituters }}
           SYSTEM: ${{ matrix.system }}
           GANTRY_INPUT: ${{ inputs.gantry-input }}
+          TRUSTED_KEYS: ${{ inputs.trusted-public-keys }}
         run: |
           read -ra subst <<<"$SUBSTITUTERS"
           SUBST_ARGS=()
@@ -86,7 +93,7 @@ jobs:
           # its locked nix-gantry input.
           nix run --inputs-from . "$GANTRY_INPUT#publish-manifest" -- \
             --flake-ref . --config "$config" --system "$SYSTEM" \
-            "${SUBST_ARGS[@]}" > fragment.json
+            --trusted-public-keys "$TRUSTED_KEYS" "${SUBST_ARGS[@]}" > fragment.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: manifest-fragment-${{ matrix.system }}

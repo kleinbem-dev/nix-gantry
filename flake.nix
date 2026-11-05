@@ -108,6 +108,8 @@
               pkgs.writeShellApplication {
                 name = "publish-manifest";
                 runtimeInputs = with pkgs; [
+                  coreutils
+                  gnused
                   jq
                   nix
                 ];

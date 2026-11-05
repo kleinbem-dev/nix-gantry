@@ -28,10 +28,13 @@ See [README's Versioning section](README.md#versioning) for what
   this fleet's `auth.kleinbem.dev`.
 
 **Fixed:**
-- `apps.publish-manifest` checks each `--substituter` with
-  `nix path-info --store`. The old `nix build --dry-run` check passed for
-  every container, cached or not. Several `--substituter`s now all apply
-  (only the last one did), and signature checks are no longer turned off.
+- `apps.publish-manifest` checks the container's whole closure against the
+  `--substituter` caches: every path has to be in one of them. The old
+  `nix build --dry-run` check passed for every container, cached or not.
+  With `--trusted-public-keys` (workflow input `trusted-public-keys`, your
+  hosts' keys) every path also has to carry a signature from one of them.
+  Several `--substituter`s now all apply (only the last one did), and
+  signature checks are no longer turned off.
 - `publish-manifest.yaml` builds a matrix from the `configs` keys (a map
   can't be a matrix), passes inputs through `env:` instead of splicing them
   into scripts, and gives `gh` the repository in the job without a checkout.
@@ -51,11 +54,24 @@ See [README's Versioning section](README.md#versioning) for what
 - Activation restarts a running container with `systemctl restart
   container@<name>`, which waits for the new boot. `machinectl restart`
   returned mid-reboot, so the health wait could pass on the old instance.
+  A closure that fails to start goes through `autoRollback` like a failed
+  healthcheck; before, the script exited and left it selected.
+- `update-container-activate@`'s timeout covers two container starts (the
+  slowest `timeoutStartSec` of the registered containers) plus
+  `healthcheckTimeoutSec`, instead of a fixed 5 minutes that a podman
+  container's 15-minute start could outlast. `update-container-rollback@`
+  is sized the same way; the wrapper units (`update-container@`,
+  `update-containers`, `container-updater-bootstrap`) have no timeout of
+  their own, since they only wait on these.
+- Rollback refuses a `previous` link that points at the current closure
+  instead of "rolling back" to it.
 - `nixosModules.host` no longer defines the empty
   `service-container-updater` unit.
 - `tls.airlock` is enforced: the container's output chain rejects
   everything but its own /24, loopback, mDNS, IPv6 link-local and the
-  `tls.upstreams` targets on 443. It used to accept everything.
+  `tls.upstreams` targets on 443. It used to accept everything. A forward
+  chain applies the same allowlist to what the container routes (rootful
+  podman), plus DNAT'd inbound connections.
   `tls.whitelistDomains` is still not enforced, and says so.
 - mTLS upstream listeners bind loopback only; they present the shared client
   certificate. `tls.upstreams.*.port` is documented as that local port.

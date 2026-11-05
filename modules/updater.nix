@@ -15,6 +15,30 @@ let
   # with `systemctl start update-container@<name>`.
   nightly = lib.subtractLists cfg.excludeFromNightly registered;
 
+  # Seconds in a container's timeoutStartSec ("90s", "15m", "1min", "120");
+  # an unparsable value counts as 15 minutes.
+  toSeconds =
+    t:
+    let
+      m = builtins.match "([0-9]+) *(s|sec|m|min|h)?" t;
+      n = lib.toInt (lib.head m);
+      unit = lib.elemAt m 1;
+    in
+    if m == null then
+      900
+    else if unit == "m" || unit == "min" then
+      n * 60
+    else if unit == "h" then
+      n * 3600
+    else
+      n;
+  maxStartSec = lib.foldl' lib.max 60 (
+    map (c: toSeconds config.containers.${c}.timeoutStartSec) registered
+  );
+  # Activation: stop + start, healthcheck, and on failure a second start for
+  # the rollback; 120s covers the stops and the settle sleeps.
+  activateTimeoutSec = 2 * maxStartSec + cfg.healthcheckTimeoutSec + 120;
+
   # Replace a symlink by rename, so a container start never sees it missing.
   swapLinkFn = ''
     swap_link() {
@@ -114,7 +138,8 @@ let
       local previous="/var/lib/machines/$1/previous"
       if ${pkgs.nix}/bin/nix-env --profile "$profile" --rollback 2>/dev/null; then
         echo "Rolled back Nix profile $profile to previous generation."
-      elif [ -e "$previous" ]; then
+      elif [ -e "$previous" ] \
+        && [ "$(readlink -f "$previous")" != "$(readlink -f "/var/lib/machines/$1/current")" ]; then
         echo "Falling back to previous symlink: $previous"
         swap_link "$(readlink -f "$previous")" "/var/lib/machines/$1/current"
       else
@@ -131,25 +156,30 @@ let
     CONTAINER=$1
 
     echo "Activating staged update for container: $CONTAINER"
+    started=1
 
     if machinectl status "$CONTAINER" >/dev/null 2>&1; then
       echo "Restarting container $CONTAINER to apply staged update..."
       # Not machinectl restart: it returns mid-reboot, while container@ still
       # looks active, so the check below passed before the new closure ran.
-      systemctl restart "container@$CONTAINER"
+      systemctl restart "container@$CONTAINER" || started=0
     else
       echo "Container $CONTAINER is not currently running. Starting it..."
-      systemctl start "container@$CONTAINER"
+      systemctl start "container@$CONTAINER" || started=0
     fi
-
-    # Allow container transition to settle
-    sleep 2
 
     echo "Waiting for container@$CONTAINER to reach active status..."
     timeout=${toString cfg.healthcheckTimeoutSec}
     elapsed=0
     interval=2
     healthy=0
+    # A failed start skips the wait and goes straight to the rollback below.
+    if [ "$started" -eq 0 ]; then
+      echo "container@$CONTAINER failed to start."
+      timeout=0
+    else
+      sleep 2 # let the transition settle
+    fi
 
     while [ "$elapsed" -lt "$timeout" ]; do
       if systemctl is-active --quiet "container@$CONTAINER"; then
@@ -179,8 +209,11 @@ let
       echo "Initiating automatic rollback for $CONTAINER..."
       if roll_back "$CONTAINER"; then
         echo "Restarting container@$CONTAINER on restored closure..."
-        systemctl restart "container@$CONTAINER" || true
-        echo "Rollback completed for $CONTAINER."
+        if systemctl restart "container@$CONTAINER"; then
+          echo "Rollback completed for $CONTAINER."
+        else
+          echo "Restored closure of $CONTAINER failed to start too."
+        fi
       fi
     ''}
 
@@ -308,7 +341,7 @@ in
 
           serviceConfig = {
             Type = "oneshot";
-            TimeoutStartSec = "5m";
+            TimeoutStartSec = activateTimeoutSec;
           };
         };
 
@@ -331,7 +364,7 @@ in
 
           serviceConfig = {
             Type = "oneshot";
-            TimeoutStartSec = "5m";
+            TimeoutStartSec = maxStartSec + 120;
           };
         };
 
@@ -348,9 +381,10 @@ in
             systemctl start --wait "update-container-activate@$CONTAINER.service"
           '';
 
+          # Only waits on stage@ and activate@, which have their own limits.
           serviceConfig = {
             Type = "oneshot";
-            TimeoutStartSec = "20m";
+            TimeoutStartSec = "infinity";
           };
         };
 
@@ -362,9 +396,10 @@ in
 
           path = with pkgs; [ systemd ];
 
+          # Only waits on stage@ and activate@, which have their own limits.
           serviceConfig = {
             Type = "oneshot";
-            TimeoutStartSec = "1h";
+            TimeoutStartSec = "infinity";
           };
 
           # A failed container doesn't stop the others, but fails the unit at the end.
@@ -433,9 +468,10 @@ in
 
           path = with pkgs; [ systemd ];
 
+          # Only waits on update-container@, see there.
           serviceConfig = {
             Type = "oneshot";
-            TimeoutStartSec = "30m";
+            TimeoutStartSec = "infinity";
           };
 
           script = ''

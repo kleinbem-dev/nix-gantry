@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
 # publish-manifest: build one system's containers from a nixosConfiguration's
 # `config.containers` and print { "<system>": { "<name>": "<store-path>" } }.
-# A container that fails to build or is in none of the --substituter caches is
-# skipped (logged to stderr) instead of failing the run; without --substituter
-# the cache check is skipped. ../.github/workflows/publish-manifest.yaml
-# merges the per-system fragments and publishes the manifest.
+# A container goes in only if every path of its closure is in one of the
+# --substituter caches and, with --trusted-public-keys (the hosts' keys), is
+# signed by one of them. Anything else is skipped (logged to stderr) instead of
+# failing the run; without --substituter the cache check is skipped.
+# ../.github/workflows/publish-manifest.yaml merges the per-system fragments
+# and publishes the manifest.
 #
 # Usage:
 #   publish-manifest --flake-ref <ref> --config <nixosConfiguration-name> \
-#     --system <system> [--substituter <url> ...]
+#     --system <system> [--substituter <url> ...] [--trusted-public-keys "<key> ..."]
 set -euo pipefail
 
 FLAKE_REF=""
 CONFIG=""
 SYSTEM=""
 SUBSTITUTERS=()
+TRUSTED_KEYS=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -22,6 +25,7 @@ while [ $# -gt 0 ]; do
     --config) CONFIG="$2"; shift 2 ;;
     --system) SYSTEM="$2"; shift 2 ;;
     --substituter) SUBSTITUTERS+=("$2"); shift 2 ;;
+    --trusted-public-keys) TRUSTED_KEYS="$2"; shift 2 ;;
     *) echo "publish-manifest: unknown argument '$1'" >&2; exit 1 ;;
   esac
 done
@@ -42,6 +46,55 @@ SUBSTITUTER_ARGS=()
 if [ "${#SUBSTITUTERS[@]}" -gt 0 ]; then
   SUBSTITUTER_ARGS=(--option extra-substituters "${SUBSTITUTERS[*]}")
 fi
+# Paths among "$@" that store $1 has; handles both path-info --json layouts.
+present_in() {
+  local store=$1
+  shift
+  nix path-info --store "$store" --json "$@" 2>/dev/null \
+    | jq -r 'if type == "array" then .[] | select(.valid != false) | .path
+             else to_entries[] | select(.value != null) | .key end'
+}
+
+# Paths among "$@" that store $1 has signed with one of TRUSTED_KEYS.
+trusted_in() {
+  local store=$1 p
+  shift
+  [ $# -gt 0 ] || return 0
+  verify() {
+    nix store verify --store "$store" --no-contents --sigs-needed 1 \
+      --trusted-public-keys "$TRUSTED_KEYS" "$@" >/dev/null 2>&1
+  }
+  # One batch call; per path only to find the culprits.
+  if verify "$@"; then
+    printf '%s\n' "$@"
+  else
+    for p in "$@"; do
+      if verify "$p"; then echo "$p"; fi
+    done
+  fi
+}
+
+# True if every path of $1's closure is in (and, with keys, trusted by) at
+# least one substituter. The host realises the whole closure, not just $1.
+closure_cached() {
+  local s closure
+  local -a missing ok
+  closure=$(nix path-info --recursive "$1") || return 1
+  mapfile -t missing <<<"$closure"
+  for s in "${SUBSTITUTERS[@]}"; do
+    [ "${#missing[@]}" -gt 0 ] || break
+    mapfile -t ok < <(present_in "$s" "${missing[@]}")
+    if [ -n "$TRUSTED_KEYS" ]; then
+      mapfile -t ok < <(trusted_in "$s" "${ok[@]}")
+    fi
+    mapfile -t missing < <(comm -23 <(printf '%s\n' "${missing[@]}" | sort) \
+      <(printf '%s\n' "${ok[@]}" | sort) | sed '/^$/d')
+  done
+  if [ "${#missing[@]}" -gt 0 ]; then
+    echo "  ${#missing[@]} closure paths missing or untrusted, e.g. ${missing[0]}" >&2
+    return 1
+  fi
+}
 
 FRAGMENT="{}"
 for name in $(echo "$CONTAINER_NAMES" | jq -r '.[]'); do
@@ -65,16 +118,9 @@ for name in $(echo "$CONTAINER_NAMES" | jq -r '.[]'); do
   # Ask the caches themselves: the local build just made the path valid here,
   # so anything that looks at the local store always says yes.
   if [ "${#SUBSTITUTERS[@]}" -gt 0 ]; then
-    echo "Verifying ${name} is cache-reachable..." >&2
-    cached=0
-    for s in "${SUBSTITUTERS[@]}"; do
-      if nix path-info --store "$s" "$store_path" >/dev/null 2>&1; then
-        cached=1
-        break
-      fi
-    done
-    if [ "$cached" -eq 0 ]; then
-      echo "  ${name}: in none of the substituters, dropping from this fragment" >&2
+    echo "Verifying ${name}'s closure is cache-reachable..." >&2
+    if ! closure_cached "$store_path"; then
+      echo "  ${name}: not fully in the substituters, dropping from this fragment" >&2
       continue
     fi
   else

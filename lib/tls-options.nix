@@ -35,7 +35,7 @@
     airlock = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Drop all egress except the container's /24, loopback, mDNS, IPv6 link-local and the tls.upstreams targets on 443. No DNS to outside resolvers.";
+      description = "Drop all egress except the container's /24, loopback, mDNS, IPv6 link-local and the tls.upstreams targets on 443, for the container and for anything it routes (podman). No DNS to outside resolvers.";
     };
     whitelistDomains = lib.mkOption {
       type = lib.types.listOf lib.types.str;

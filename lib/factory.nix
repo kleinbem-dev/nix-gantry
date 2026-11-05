@@ -258,6 +258,18 @@ in
                         reject with icmpx type admin-prohibited
                       ''}
                     }
+                    ${lib.optionalString airlock ''
+                      # Routed traffic from nested (podman) containers skips
+                      # output; same allowlist, plus DNAT'd inbound connections.
+                      chain forward {
+                        type filter hook forward priority filter; policy accept;
+                        ct state { established, related } accept
+                        ct status dnat accept
+                        ip daddr ${containerSubnetCidr} accept
+                        ${fwUpstreamRules}
+                        reject with icmpx type admin-prohibited
+                      }
+                    ''}
                   '';
                 };
               };
