@@ -32,6 +32,10 @@ See [README's Versioning section](README.md#versioning) for what
   this fleet's `auth.kleinbem.dev`.
 
 **Fixed:**
+- `nixosModules.host-persistence` only persists a `hostDataDir` that lives on
+  tmpfs. One on a real disk (e.g. `/mnt/data/...`) is already persistent, and
+  the bind from `/nix/persist` hid that disk's copy, so the data stayed on the
+  root disk.
 - `apps.publish-manifest` checks the container's whole closure against the
   `--substituter` caches: every path has to be in one of them. The old
   `nix build --dry-run` check passed for every container, cached or not.
