@@ -15,23 +15,44 @@ let
   # with `systemctl start update-container@<name>`.
   nightly = lib.subtractLists cfg.excludeFromNightly registered;
 
-  # Seconds in a container's timeoutStartSec ("90s", "15m", "1min", "120");
-  # an unparsable value counts as 15 minutes.
+  # Seconds in a container's timeoutStartSec, as systemd reads it: a sum of
+  # "<n><unit>" tokens ("90s", "15min", "1h 30min"; a bare number is seconds).
+  # Anything else fails evaluation rather than guessing a limit.
+  unitSeconds = {
+    "" = 1;
+    s = 1;
+    sec = 1;
+    second = 1;
+    seconds = 1;
+    m = 60;
+    min = 60;
+    minute = 60;
+    minutes = 60;
+    h = 3600;
+    hr = 3600;
+    hour = 3600;
+    hours = 3600;
+    d = 86400;
+    day = 86400;
+    days = 86400;
+  };
   toSeconds =
     t:
     let
-      m = builtins.match "([0-9]+) *(s|sec|m|min|h)?" t;
-      n = lib.toInt (lib.head m);
-      unit = lib.elemAt m 1;
+      parts = builtins.split "([0-9]+) *([a-z]*)" t;
+      tokens = lib.filter builtins.isList parts;
+      rest = lib.concatStrings (lib.filter builtins.isString parts);
+      sec =
+        tok:
+        lib.toInt (lib.head tok)
+        * (unitSeconds.${lib.elemAt tok 1}
+        or (throw "nix-gantry: unknown time unit in timeoutStartSec \"${t}\"")
+        );
     in
-    if m == null then
-      900
-    else if unit == "m" || unit == "min" then
-      n * 60
-    else if unit == "h" then
-      n * 3600
+    if tokens == [ ] || builtins.match " *" rest == null then
+      throw "nix-gantry: can't read timeoutStartSec \"${t}\"; use e.g. \"90s\", \"15min\" or \"1h 30min\""
     else
-      n;
+      lib.foldl' (acc: tok: acc + sec tok) 0 tokens;
   maxStartSec = lib.foldl' lib.max 60 (
     map (c: toSeconds config.containers.${c}.timeoutStartSec) registered
   );
