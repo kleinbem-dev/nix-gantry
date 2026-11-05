@@ -3,6 +3,17 @@
 See [README's Versioning section](README.md#versioning) for what
 "breaking" means at this stage (`0.x`).
 
+## Unreleased
+
+**Added:**
+- Container journals reach the host. `lib.mkContainer` passes nspawn
+  `--forward-journal`, so each container's journal lands in
+  `/var/log/containers/<name>`, survives the ephemeral root's restarts and
+  is readable by the `systemd-journal` group with `journalctl -D`. Set by
+  `my.container-host.journal.forward` (on with systemd 261 or newer) and
+  capped by `my.container-host.journal.maxUse` (default `256M`). On an
+  impermanent host, persist `/var/log/containers`.
+
 ## v0.2.0
 
 **Added:**

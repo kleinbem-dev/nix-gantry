@@ -96,6 +96,25 @@ in
       '';
     };
 
+    journal = {
+      forward = lib.mkOption {
+        type = lib.types.bool;
+        default = lib.versionAtLeast config.systemd.package.version "261";
+        defaultText = lib.literalExpression ''lib.versionAtLeast config.systemd.package.version "261"'';
+        description = ''
+          Stream each container's journal to /var/log/containers/<name> on the
+          host (nspawn --forward-journal, needs systemd 261 or newer). Readable by the
+          systemd-journal group with `journalctl -D`, and it survives container
+          restarts. On an impermanent host, persist /var/log/containers.
+        '';
+      };
+      maxUse = lib.mkOption {
+        type = lib.types.str;
+        default = "256M";
+        description = "Disk cap per container for the forwarded journal.";
+      };
+    };
+
     # Needs nixosModules.host-persistence plus the impermanence module.
     enablePersistence = lib.mkEnableOption "Impermanence for container host";
   };

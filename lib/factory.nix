@@ -110,6 +110,13 @@ let
   mkFwRule = upstream: "ip daddr ${upstream.target} tcp dport 443 accept";
   fwUpstreamRules = lib.concatMapStringsSep "\n            " mkFwRule upstreams;
 
+  # Ephemeral roots lose the guest journal on every restart and nixpkgs skips
+  # --link-journal for them, so stream it to the host instead (systemd >= 261).
+  journalCfg = config.my.container-host.journal or { };
+  forwardJournal =
+    journalCfg.forward or (lib.versionAtLeast (config.systemd.package.version or "0") "261");
+  journalDir = "/var/log/containers/${name}";
+
   updaterList = config.my.services.container-updater.containers or [ ];
   isStandalone =
     (builtins.elem name updaterList)
@@ -139,6 +146,11 @@ in
     # Set the timeout here: nixos-containers assigns TimeoutStartSec from this
     # option, and a serviceConfig.TimeoutStartSec override on container@ never wins.
     timeoutStartSec = effectiveTimeout;
+
+    extraFlags = lib.optionals forwardJournal [
+      "--forward-journal=${journalDir}/"
+      "--forward-journal-max-use=${journalCfg.maxUse or "256M"}"
+    ];
 
     # Conditionally allow hardware device pass-through
     allowedDevices =
@@ -441,7 +453,9 @@ in
   # crowdsec, whose module drops all capabilities) must own the dir: pass
   # cfg.dataDirOwner/dataDirGroup.
   systemd.tmpfiles.rules =
-    (lib.optionals (cfg ? hostDataDir && cfg.hostDataDir != null) [
+    # setgid: journal files inherit systemd-journal, readable without root.
+    (lib.optional forwardJournal "d ${journalDir} 2750 root systemd-journal - -")
+    ++ (lib.optionals (cfg ? hostDataDir && cfg.hostDataDir != null) [
       "d ${cfg.hostDataDir} 0755 ${toString (cfg.dataDirOwner or 1000)} ${
         toString (cfg.dataDirGroup or 100)
       } - -"
