@@ -15,7 +15,7 @@ let
   # with `systemctl start update-container@<name>`.
   nightly = lib.subtractLists cfg.excludeFromNightly registered;
 
-  # Seconds in a container's timeoutStartSec, as systemd reads it: a sum of
+  # Seconds in a container timeout, as systemd reads it: a sum of
   # "<n><unit>" tokens ("90s", "15min", "1h 30min"; a bare number is seconds).
   # Anything else fails evaluation rather than guessing a limit.
   unitSeconds = {
@@ -46,19 +46,29 @@ let
         tok:
         lib.toInt (lib.head tok)
         * (unitSeconds.${lib.elemAt tok 1}
-        or (throw "nix-gantry: unknown time unit in timeoutStartSec \"${t}\"")
+        or (throw "nix-gantry: unknown time unit in container timeout \"${t}\"")
         );
     in
     if tokens == [ ] || builtins.match " *" rest == null then
-      throw "nix-gantry: can't read timeoutStartSec \"${t}\"; use e.g. \"90s\", \"15min\" or \"1h 30min\""
+      throw "nix-gantry: can't read container timeout \"${t}\"; use e.g. \"90s\", \"15min\" or \"1h 30min\""
     else
       lib.foldl' (acc: tok: acc + sec tok) 0 tokens;
   maxStartSec = lib.foldl' lib.max 60 (
     map (c: toSeconds config.containers.${c}.timeoutStartSec) registered
   );
-  # Activation: stop + start, healthcheck, and on failure a second start for
-  # the rollback; 120s covers the stops and the settle sleeps.
-  activateTimeoutSec = 2 * maxStartSec + cfg.healthcheckTimeoutSec + 120;
+  # container@'s TimeoutStopSec (lib.mkContainer sets one); 90s is systemd's default.
+  maxStopSec = lib.foldl' lib.max 90 (
+    map (
+      c:
+      toSeconds (
+        toString (config.systemd.services."container@${c}".serviceConfig.TimeoutStopSec or "90s")
+      )
+    ) registered
+  );
+  restartSec = maxStopSec + maxStartSec;
+  # Activation: restart, healthcheck, and on failure a second restart for the
+  # rollback; 60s covers the settle sleeps and the closure swap.
+  activateTimeoutSec = 2 * restartSec + cfg.healthcheckTimeoutSec + 60;
 
   # Replace a symlink by rename, so a container start never sees it missing.
   swapLinkFn = ''
@@ -385,7 +395,7 @@ in
 
           serviceConfig = {
             Type = "oneshot";
-            TimeoutStartSec = maxStartSec + 120;
+            TimeoutStartSec = restartSec + 60;
           };
         };
 

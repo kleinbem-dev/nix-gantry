@@ -11,7 +11,10 @@ See [README's Versioning section](README.md#versioning) for what
   150s (above postgresql's 120s), so the guest shuts down cleanly. A killed
   nspawn leaves its unix-export mount behind, and the next start failed with
   "Mount point … exists already, refusing" (systemd/systemd#36455). Both
-  are `mkDefault`.
+  are `mkDefault`. `update-container-activate@` and
+  `update-container-rollback@` now count each restart as the slowest
+  `container@` stop plus the slowest start, so the longer stop can't time
+  out an activation or a rollback.
 
 **Added:**
 - Container journals reach the host. `lib.mkContainer` passes nspawn
