@@ -20,22 +20,29 @@ let
 in
 {
   config = lib.mkIf (cfg.enable && cfg.enablePersistence) {
-    # ─── Persistence for Container State ────────────────────────
-    # Keep container data directories across reboots.
+    # Persist only hostDataDirs that live on tmpfs. One on a real disk
+    # (e.g. /mnt/data) is already persistent; a bind from /nix/persist would
+    # hide that disk's copy and keep the data on the root disk instead.
     environment.persistence."/nix/persist".directories =
       let
-        # Extract all hostDataDir values from enabled containers
+        hasPrefix = mp: path: mp == "/" || path == mp || lib.hasPrefix "${mp}/" path;
+        # Longest mount point containing the path; unknown counts as tmpfs.
+        onTmpfs =
+          path:
+          let
+            mounts = lib.filter (fs: hasPrefix fs.mountPoint path) (lib.attrValues config.fileSystems);
+            deepest = lib.foldl' (
+              a: b: if a == null || lib.stringLength b.mountPoint > lib.stringLength a.mountPoint then b else a
+            ) null mounts;
+          in
+          deepest == null || deepest.fsType == "tmpfs";
         containerDirs = lib.concatMap (
           name:
-          (
-            let
-              container = config.my.containers.${name};
-            in
-            if container.enable or false then
-              lib.optional ((container.hostDataDir or null) != null) container.hostDataDir
-            else
-              [ ]
-          )
+          let
+            container = config.my.containers.${name};
+            dir = container.hostDataDir or null;
+          in
+          lib.optional ((container.enable or false) && dir != null && onTmpfs dir) dir
         ) (lib.attrNames config.my.containers);
       in
       lib.unique containerDirs ++ lib.optional cfg.journal.forward "/var/log/containers";
