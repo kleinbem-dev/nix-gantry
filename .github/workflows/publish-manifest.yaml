@@ -1,0 +1,90 @@
+name: Publish container manifest
+
+# Reusable workflow: build each system's containers, assemble the
+# {rev, generated, systems} manifest modules/updater.nix reads, and upload it
+# to a rolling release tag (overwritten on every run). Call it like this:
+#
+#   jobs:
+#     publish-manifest:
+#       uses: kleinbem-dev/nix-gantry/.github/workflows/publish-manifest.yaml@main
+#       with:
+#         configs: '{"x86_64-linux": "container-factory", "aarch64-linux": "container-factory-aarch64"}'
+#         substituters: "https://cache.nixos.org https://cache.example.dev/system"
+#         release-tag: "container-manifest"
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      configs:
+        description: 'JSON map of system -> nixosConfiguration name, e.g. {"x86_64-linux": "container-factory"}'
+        required: true
+        type: string
+      substituters:
+        description: "Space-separated list of binary cache URLs to verify against"
+        required: false
+        type: string
+        default: "https://cache.nixos.org"
+      release-tag:
+        description: "GitHub release tag the manifest is published to (created if missing, overwritten if present)"
+        required: false
+        type: string
+        default: "container-manifest"
+
+jobs:
+  build-and-verify:
+    strategy:
+      matrix:
+        system: ${{ fromJson(inputs.configs) }}
+      fail-fast: false
+    runs-on: ${{ contains(matrix.system, 'aarch64') && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: kleinbem/actions/nix-setup@7ec628296d5194e6e10031706387b992a10a1638 # v1.0.1
+        with:
+          nix-path: nixpkgs=channel:nixos-unstable
+          # Read-only Attic over NetBird; skipped when the secrets are
+          # absent (fork PRs, Dependabot).
+          netbird-setup-key: ${{ secrets.NETBIRD_SETUP_KEY_EPHEMERAL }}
+          attic-token: ${{ secrets.ATTIC_PULL_TOKEN }}
+      - name: Build + verify this system's containers
+        id: fragment
+        run: |
+          SUBST_ARGS=()
+          for s in ${{ inputs.substituters }}; do
+            SUBST_ARGS+=(--substituter "$s")
+          done
+          config=$(echo '${{ toJson(fromJson(inputs.configs)) }}' | jq -r --arg sys "${{ matrix.system }}" '.[$sys]')
+          nix run .#publish-manifest -- \
+            --flake-ref . --config "$config" --system "${{ matrix.system }}" \
+            "${SUBST_ARGS[@]}" > fragment.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: manifest-fragment-${{ matrix.system }}
+          path: fragment.json
+
+  merge-and-publish:
+    needs: build-and-verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: manifest-fragment-*
+          path: fragments
+      - name: Assemble manifest
+        run: |
+          REV="${{ github.sha }}"
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          SYSTEMS=$(jq -s 'add' fragments/*/fragment.json)
+          jq -n --arg rev "$REV" --arg date "$DATE" --argjson systems "$SYSTEMS" \
+            '{rev: $rev, generated: $date, systems: $systems}' > manifest.json
+          cat manifest.json
+      - name: Publish to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ inputs.release-tag }}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --notes "Rolling container manifest" --latest=false
+          fi
+          gh release upload "$TAG" manifest.json --clobber

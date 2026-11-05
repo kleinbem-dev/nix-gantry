@@ -1,0 +1,34 @@
+name: check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: kleinbem/actions/nix-setup@7ec628296d5194e6e10031706387b992a10a1638 # v1.0.1
+        with:
+          nix-path: nixpkgs=channel:nixos-unstable
+          # Read-only Attic over NetBird; skipped when the secrets are
+          # absent (fork PRs, Dependabot).
+          netbird-setup-key: ${{ secrets.NETBIRD_SETUP_KEY_EPHEMERAL }}
+          attic-token: ${{ secrets.ATTIC_PULL_TOKEN }}
+      # checks.lint already runs nixfmt --check, so no separate `nix fmt` step.
+      - run: nix flake check -L
+      # publish-manifest runs nix itself, which a sandboxed check can't
+      # (no recursive nix), so it's tested here against examples/.
+      - name: Test apps.publish-manifest against the example flake
+        run: |
+          cd examples
+          nix run ..#publish-manifest -- \
+            --flake-ref . --config quickstart-factory --system x86_64-linux \
+            > /tmp/fragment.json
+          cat /tmp/fragment.json
+          store_path=$(jq -er '.["x86_64-linux"]["hello"]' /tmp/fragment.json)
+          echo "Got store path: $store_path"
+          nix path-info "$store_path"
