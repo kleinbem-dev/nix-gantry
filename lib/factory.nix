@@ -303,9 +303,13 @@ in
               # Prevent broken services from restarting endlessly:
               # Trips the burst limit after 5 failures in 15 minutes, transitioning
               # the unit into "failed" state so crash-loops don't run silently.
+              # A hung service is killed by the guest's own systemd, well inside
+              # container@'s TimeoutStopSec, so the guest still shuts down cleanly.
+              # upstream: systemd/systemd#36455
               systemd.settings.Manager = {
                 DefaultStartLimitIntervalSec = "15m";
                 DefaultStartLimitBurst = 5;
+                DefaultTimeoutStopSec = mkDefault "45s";
               };
               nixpkgs.config = {
                 allowUnfree = true;
@@ -521,6 +525,10 @@ in
         RestartSec = "10s";
         RestartSteps = 5;
         RestartMaxDelaySec = "5m";
+        # Above every guest unit's stop timeout (postgresql sets 120s): a SIGKILLed
+        # nspawn leaves its unix-export mount, and the next start refuses it.
+        # upstream: systemd/systemd#36455
+        TimeoutStopSec = lib.mkDefault "150s";
       }
       (mkIf
         (
