@@ -42,22 +42,34 @@ let
       parts = builtins.split "([0-9]+) *([a-z]*)" t;
       tokens = lib.filter builtins.isList parts;
       rest = lib.concatStrings (lib.filter builtins.isString parts);
+      n = tok: lib.toInt (lib.head tok);
+      u = tok: lib.elemAt tok 1;
+      # Sub-second units round up: an upper bound must not shrink.
       sec =
         tok:
-        lib.toInt (lib.head tok)
-        * (unitSeconds.${lib.elemAt tok 1}
-        or (throw "nix-gantry: unknown time unit in container timeout \"${t}\"")
-        );
+        if subSecond ? ${u tok} then
+          (n tok + subSecond.${u tok} - 1) / subSecond.${u tok}
+        else
+          n tok
+          * (unitSeconds.${u tok} or (throw "nix-gantry: unknown time unit in container timeout \"${t}\""));
     in
-    if tokens == [ ] || builtins.match " *" rest == null then
+    if t == "infinity" then
+      null
+    else if tokens == [ ] || builtins.match " *" rest == null then
       throw "nix-gantry: can't read container timeout \"${t}\"; use e.g. \"90s\", \"15min\" or \"1h 30min\""
     else
       lib.foldl' (acc: tok: acc + sec tok) 0 tokens;
-  maxStartSec = lib.foldl' lib.max 60 (
-    map (c: toSeconds config.containers.${c}.timeoutStartSec) registered
-  );
+  subSecond = {
+    ms = 1000;
+    msec = 1000;
+    us = 1000000;
+    usec = 1000000;
+  };
+  # The largest limit, or null when any container's is "infinity".
+  maxOf = floor: ts: if builtins.elem null ts then null else lib.foldl' lib.max floor ts;
+  maxStartSec = maxOf 60 (map (c: toSeconds config.containers.${c}.timeoutStartSec) registered);
   # container@'s TimeoutStopSec (lib.mkContainer sets one); 90s is systemd's default.
-  maxStopSec = lib.foldl' lib.max 90 (
+  maxStopSec = maxOf 90 (
     map (
       c:
       toSeconds (
@@ -65,10 +77,14 @@ let
       )
     ) registered
   );
+  # An unbounded stop or start makes the updater units unbounded too.
+  bounded = maxStopSec != null && maxStartSec != null;
   restartSec = maxStopSec + maxStartSec;
   # Activation: restart, healthcheck, and on failure a second restart for the
   # rollback; 60s covers the settle sleeps and the closure swap.
-  activateTimeoutSec = 2 * restartSec + cfg.healthcheckTimeoutSec + 60;
+  activateTimeoutSec =
+    if bounded then 2 * restartSec + cfg.healthcheckTimeoutSec + 60 else "infinity";
+  rollbackTimeoutSec = if bounded then restartSec + 60 else "infinity";
 
   # Replace a symlink by rename, so a container start never sees it missing.
   swapLinkFn = ''
@@ -395,7 +411,7 @@ in
 
           serviceConfig = {
             Type = "oneshot";
-            TimeoutStartSec = restartSec + 60;
+            TimeoutStartSec = rollbackTimeoutSec;
           };
         };
 

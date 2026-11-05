@@ -6,15 +6,21 @@ See [README's Versioning section](README.md#versioning) for what
 ## Unreleased
 
 **Fixed:**
-- A guest service that hangs on stop no longer gets the whole container
-  SIGKILLed. Guest units default to a 45s stop timeout and `container@` waits
-  150s (above postgresql's 120s), so the guest shuts down cleanly. A killed
+- A guest service that hangs on stop usually no longer gets the whole
+  container SIGKILLed. Guest units default to a 45s stop timeout and
+  `container@` waits 150s (above postgresql's 120s), so the guest's own
+  systemd kills the hung unit first. Stop timeouts are per unit: services
+  ordered after each other that all hang can still add up past 150s, so
+  raise `container@<name>`'s `TimeoutStopSec` for such a guest. A killed
   nspawn leaves its unix-export mount behind, and the next start failed with
   "Mount point … exists already, refusing" (systemd/systemd#36455). Both
-  are `mkDefault`. `update-container-activate@` and
-  `update-container-rollback@` now count each restart as the slowest
-  `container@` stop plus the slowest start, so the longer stop can't time
-  out an activation or a rollback.
+  are `mkDefault`.
+- `update-container-activate@` and `update-container-rollback@` count each
+  restart as the slowest `container@` stop plus the slowest start, so the
+  longer stop can't time out an activation or a rollback. A container with
+  `TimeoutStopSec` or `timeoutStartSec` set to `infinity` makes both
+  unbounded; sub-second units (`ms`, `us`) round up instead of failing
+  evaluation.
 
 **Added:**
 - Container journals reach the host. `lib.mkContainer` passes nspawn
