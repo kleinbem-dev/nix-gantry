@@ -55,9 +55,11 @@ let
 
   # Outbound: localhost:<port> -> <target>:443 over mTLS. The server cert is
   # checked against the internal CA by its SAN (the upstream's name, hence
-  # tls_server_name); this container presents the shared client cert.
+  # tls_server_name); this container presents the shared client cert, so the
+  # listener stays on loopback.
   mkUpstreamBlock = upstream: ''
     :${toString upstream.port} {
+      bind 127.0.0.1 [::1]
       reverse_proxy ${upstream.target}:443 {
         header_up Host ${upstream.name}
         transport http {
@@ -73,6 +75,7 @@ let
   '';
 
   upstreamBlocks = lib.concatMapStringsSep "\n" mkUpstreamBlock upstreams;
+  upstreamPorts = map (u: u.port) upstreams;
 
   # Inbound: :443 terminates mTLS with this container's cert, requires a client
   # cert from the internal CA, then proxies to the local service.
@@ -109,6 +112,9 @@ let
   # Firewall exceptions: allow outbound to each upstream (nftables)
   mkFwRule = upstream: "ip daddr ${upstream.target} tcp dport 443 accept";
   fwUpstreamRules = lib.concatMapStringsSep "\n            " mkFwRule upstreams;
+
+  # airlock: drop all other egress. Upstream targets are IPs, so no DNS.
+  airlock = (cfg.tls or { }).airlock or false;
 
   # Ephemeral roots lose the guest journal on every restart and nixpkgs skips
   # --link-journal for them, so stream it to the host instead (systemd >= 261).
@@ -235,7 +241,8 @@ in
                 firewall.enable = mkDefault true;
                 nftables.enable = mkDefault true;
 
-                # Zero Trust: restrict outbound to bridge subnet (defense-in-depth)
+                # Outbound allowlist: only enforced with tls.airlock; otherwise
+                # the chain accepts everything.
                 nftables.tables.zt-factory = {
                   family = "inet";
                   content = ''
@@ -245,6 +252,11 @@ in
                       ip daddr ${containerSubnetCidr} accept
                       oifname "lo" accept
                       ${fwUpstreamRules}
+                      ${lib.optionalString airlock ''
+                        ip daddr 224.0.0.251 udp dport 5353 accept
+                        ip6 daddr { fe80::/10, ff02::/16 } accept
+                        reject with icmpx type admin-prohibited
+                      ''}
                     }
                   '';
                 };
@@ -286,12 +298,12 @@ in
               nixpkgs.config = {
                 allowUnfree = true;
                 allowUnfreePredicate = _: true;
+                # no-link: nixpkgs marks openclaw insecure by design (prompt
+                # injection), not a bug awaiting a fix. A predicate, so bumps
+                # don't need a new version string.
                 allowInsecurePredicate =
                   pkg:
                   builtins.elem (lib.getName pkg) [
-                    # Advisory marking (prompt injection by design), not a CVE;
-                    # the factory builds it as an isolated container.
-                    # Using predicate to allow automatic updates across version bumps.
                     "openclaw"
                   ];
               };
@@ -299,6 +311,18 @@ in
 
             # mTLS Sidecar (only when there's inbound/outbound to proxy)
             (mkIf (hasTls && (serverPort > 0 || upstreams != [ ])) {
+              # Two site blocks on one port make Caddy refuse the whole config.
+              assertions = [
+                {
+                  assertion = lib.unique upstreamPorts == upstreamPorts;
+                  message = "${name}: tls.upstreams use the same port twice.";
+                }
+                {
+                  assertion =
+                    serverPort == 0 || !(builtins.elem 443 upstreamPorts || builtins.elem serverPort upstreamPorts);
+                  message = "${name}: a tls.upstreams port collides with the inbound :443 listener or serverPort; set upstreams.*.port to a free local port.";
+                }
+              ];
               networking.firewall.allowedTCPPorts = lib.mkIf (serverPort > 0) [ 443 ];
 
               environment.systemPackages = [ pkgs.caddy ];

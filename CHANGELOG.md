@@ -23,6 +23,9 @@ See [README's Versioning section](README.md#versioning) for what
   caller. It runs `publish-manifest` from the caller's locked `nix-gantry`
   input (`gantry-input`, default `nix-gantry`) instead of the caller's own
   flake, which never had the app.
+- `lib.oidcOptions`' `issuerUrl` has no fallback any more: pass
+  `issuerUrl` when importing it, or set the option. It used to default to
+  this fleet's `auth.kleinbem.dev`.
 
 **Fixed:**
 - `apps.publish-manifest` checks each `--substituter` with
@@ -50,6 +53,15 @@ See [README's Versioning section](README.md#versioning) for what
   returned mid-reboot, so the health wait could pass on the old instance.
 - `nixosModules.host` no longer defines the empty
   `service-container-updater` unit.
+- `tls.airlock` is enforced: the container's output chain rejects
+  everything but its own /24, loopback, mDNS, IPv6 link-local and the
+  `tls.upstreams` targets on 443. It used to accept everything.
+  `tls.whitelistDomains` is still not enforced, and says so.
+- mTLS upstream listeners bind loopback only; they present the shared client
+  certificate. `tls.upstreams.*.port` is documented as that local port.
+- Evaluation fails with a clear message when a `tls.upstreams` port is used
+  twice or collides with the inbound `:443`/`serverPort`, which made Caddy
+  reject its config and the sidecar restart in a loop.
 
 ## v0.2.0
 

@@ -8,6 +8,8 @@
 #   podman-nesting  eval only (VM tests have no network for image pulls):
 #                   usesPodman wires the storage mount, CAP_BPF, /dev/fuse.
 #   egress-replies  eval only: egress replies are accepted before the LAN drop.
+#   tls-sidecar     eval + caddy adapt: upstream listeners bind loopback and
+#                   tls.airlock ends the output chain in a reject.
 {
   pkgs,
   self,
@@ -74,6 +76,45 @@ let
     ];
   };
   demoClosure = demoFactoryEval.config.containers.demo.path;
+
+  # A factory-mode container with an inbound sidecar, one upstream and airlock.
+  tlsFactoryEval = inputs.nixpkgs.lib.nixosSystem {
+    inherit system;
+    modules = [
+      shimModule
+      (
+        { config, ... }:
+        {
+          inherit
+            (self.lib.mkContainer {
+              inherit config;
+              name = "demo-tls";
+              cfg = {
+                ip = "10.233.4.2/24";
+                hostBridge = "cbr0";
+                tls = {
+                  enable = true;
+                  serverPort = 8080;
+                  upstreams = [
+                    {
+                      name = "api";
+                      target = "10.233.4.3";
+                      port = 4000;
+                    }
+                  ];
+                  airlock = true;
+                };
+              };
+              innerConfig.system.stateVersion = "25.11";
+            })
+            containers
+            ;
+          system.stateVersion = "25.11";
+        }
+      )
+    ];
+  };
+  tlsInner = tlsFactoryEval.config.containers.demo-tls.config;
 
   manifestFile = pkgs.writeText "manifest.json" (
     builtins.toJSON {
@@ -280,6 +321,25 @@ in
         else
           throw "egress: the LAN drop comes before the established/related accept"
       }
+      touch $out
+    '';
+
+  tls-sidecar =
+    let
+      text = tlsInner.environment.etc."caddy-sidecar/Caddyfile".text;
+      caddyfile = pkgs.writeText "Caddyfile" text;
+      nft = tlsInner.networking.nftables.tables.zt-factory.content;
+    in
+    pkgs.runCommand "nix-gantry-tls-sidecar-check" { nativeBuildInputs = [ pkgs.caddy ]; } ''
+      ${
+        if lib.hasInfix "reject with icmpx type admin-prohibited" nft then
+          ""
+        else
+          throw "tls.airlock: output chain does not reject"
+      }
+      HOME=$TMPDIR caddy adapt --adapter caddyfile --config ${caddyfile} > adapted.json
+      grep -q '"127.0.0.1:4000"' adapted.json || { echo "upstream listener not on loopback"; exit 1; }
+      if grep -q '":4000"' adapted.json; then echo "upstream listener on all interfaces"; exit 1; fi
       touch $out
     '';
 }

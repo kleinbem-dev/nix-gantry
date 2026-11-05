@@ -24,7 +24,7 @@
             port = lib.mkOption {
               type = lib.types.int;
               default = 443;
-              description = "Port on the upstream (usually 443 for mTLS).";
+              description = "Local loopback port this container's sidecar listens on for this upstream; the upstream itself is reached on 443. Must differ from 443 and serverPort when serverPort > 0.";
             };
           };
         }
@@ -35,12 +35,12 @@
     airlock = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Strictly block all internet egress from this container.";
+      description = "Drop all egress except the container's /24, loopback, mDNS, IPv6 link-local and the tls.upstreams targets on 443. No DNS to outside resolvers.";
     };
     whitelistDomains = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      description = "List of domains to dynamically whitelist for this container's airlock.";
+      description = "Not enforced yet: reserved for domains to allow through the airlock.";
     };
   };
 }
