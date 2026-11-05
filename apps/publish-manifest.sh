@@ -4,7 +4,9 @@
 # A container goes in only if every path of its closure is in one of the
 # --substituter caches and, with --trusted-public-keys (the hosts' keys), is
 # signed by one of them. Anything else is skipped (logged to stderr) instead of
-# failing the run; without --substituter the cache check is skipped.
+# failing the run, unless a substituter can't be queried at all: then the run
+# fails, so an outage never publishes an emptied manifest. Without
+# --substituter the cache check is skipped.
 # ../.github/workflows/publish-manifest.yaml merges the per-system fragments
 # and publishes the manifest.
 #
@@ -47,12 +49,13 @@ if [ "${#SUBSTITUTERS[@]}" -gt 0 ]; then
   SUBSTITUTER_ARGS=(--option extra-substituters "${SUBSTITUTERS[*]}")
 fi
 # Paths among "$@" that store $1 has; handles both path-info --json layouts.
+# Fails if the store can't be queried; missing paths alone don't fail it.
 present_in() {
-  local store=$1
+  local store=$1 info
   shift
-  nix path-info --store "$store" --json "$@" 2>/dev/null \
-    | jq -r 'if type == "array" then .[] | select(.valid != false) | .path
-             else to_entries[] | select(.value != null) | .key end'
+  info=$(nix path-info --store "$store" --json "$@" 2>/dev/null) || return 1
+  jq -r 'if type == "array" then .[] | select(.valid != false) | .path
+         else to_entries[] | select(.value != null) | .key end' <<<"$info"
 }
 
 # Paths among "$@" that store $1 has signed with one of TRUSTED_KEYS.
@@ -76,14 +79,20 @@ trusted_in() {
 
 # True if every path of $1's closure is in (and, with keys, trusted by) at
 # least one substituter. The host realises the whole closure, not just $1.
+# Returns 2 if paths are left over and a substituter couldn't be queried:
+# that's an outage, not a missing container.
 closure_cached() {
-  local s closure
+  local s closure out unreachable=()
   local -a missing ok
   closure=$(nix path-info --recursive "$1") || return 1
   mapfile -t missing <<<"$closure"
   for s in "${SUBSTITUTERS[@]}"; do
     [ "${#missing[@]}" -gt 0 ] || break
-    mapfile -t ok < <(present_in "$s" "${missing[@]}")
+    if ! out=$(present_in "$s" "${missing[@]}"); then
+      unreachable+=("$s")
+      continue
+    fi
+    mapfile -t ok < <(printf '%s' "$out" | sed '/^$/d')
     if [ -n "$TRUSTED_KEYS" ]; then
       mapfile -t ok < <(trusted_in "$s" "${ok[@]}")
     fi
@@ -91,6 +100,10 @@ closure_cached() {
       <(printf '%s\n' "${ok[@]}" | sort) | sed '/^$/d')
   done
   if [ "${#missing[@]}" -gt 0 ]; then
+    if [ "${#unreachable[@]}" -gt 0 ]; then
+      echo "  could not query ${unreachable[*]}" >&2
+      return 2
+    fi
     echo "  ${#missing[@]} closure paths missing or untrusted, e.g. ${missing[0]}" >&2
     return 1
   fi
@@ -119,7 +132,12 @@ for name in $(echo "$CONTAINER_NAMES" | jq -r '.[]'); do
   # so anything that looks at the local store always says yes.
   if [ "${#SUBSTITUTERS[@]}" -gt 0 ]; then
     echo "Verifying ${name}'s closure is cache-reachable..." >&2
-    if ! closure_cached "$store_path"; then
+    rc=0
+    closure_cached "$store_path" || rc=$?
+    if [ "$rc" -eq 2 ]; then
+      echo "error: substituter unreachable, not publishing a fragment" >&2
+      exit 1
+    elif [ "$rc" -ne 0 ]; then
       echo "  ${name}: not fully in the substituters, dropping from this fragment" >&2
       continue
     fi

@@ -22,7 +22,11 @@ See [README's Versioning section](README.md#versioning) for what
   container closure) and needs `permissions: contents: write` from the
   caller. It runs `publish-manifest` from the caller's locked `nix-gantry`
   input (`gantry-input`, default `nix-gantry`) instead of the caller's own
-  flake, which never had the app.
+  flake, which never had the app. Bump that lock with the workflow ref:
+  `trusted-public-keys` needs a `nix-gantry` input from this release.
+- `publish-manifest` fails when a substituter can't be queried and paths are
+  still unaccounted for, instead of dropping every container from the
+  manifest.
 - `lib.oidcOptions`' `issuerUrl` has no fallback any more: pass
   `issuerUrl` when importing it, or set the option. It used to default to
   this fleet's `auth.kleinbem.dev`.

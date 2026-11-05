@@ -15,6 +15,9 @@ name: Publish container manifest
 #         trusted-public-keys: "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= system:..."
 #         release-tag: "container-manifest"
 #       secrets: inherit
+#
+# It runs publish-manifest from the caller's locked nix-gantry input, so keep
+# that lock at least as new as the workflow ref (trusted-public-keys needs it).
 
 on:
   workflow_call:
@@ -89,11 +92,16 @@ jobs:
             SUBST_ARGS+=(--substituter "$s")
           done
           config=$(jq -r --arg sys "$SYSTEM" '.[$sys]' <<<"$CONFIGS")
+          # Only with keys set: an older locked publish-manifest doesn't know the flag.
+          KEY_ARGS=()
+          if [ -n "$TRUSTED_KEYS" ]; then
+            KEY_ARGS=(--trusted-public-keys "$TRUSTED_KEYS")
+          fi
           # The caller's checkout has no publish-manifest app; run the one from
           # its locked nix-gantry input.
           nix run --inputs-from . "$GANTRY_INPUT#publish-manifest" -- \
             --flake-ref . --config "$config" --system "$SYSTEM" \
-            --trusted-public-keys "$TRUSTED_KEYS" "${SUBST_ARGS[@]}" > fragment.json
+            "${KEY_ARGS[@]}" "${SUBST_ARGS[@]}" > fragment.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: manifest-fragment-${{ matrix.system }}

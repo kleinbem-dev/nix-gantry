@@ -81,43 +81,49 @@ let
   brokenClosure = pkgs.writeText "not-a-system" "";
 
   # A factory-mode container with an inbound sidecar, one upstream and airlock.
-  tlsFactoryEval = inputs.nixpkgs.lib.nixosSystem {
-    inherit system;
-    modules = [
-      shimModule
-      (
-        { config, ... }:
-        {
-          inherit
-            (self.lib.mkContainer {
-              inherit config;
-              name = "demo-tls";
-              cfg = {
-                ip = "10.233.4.2/24";
-                hostBridge = "cbr0";
-                tls = {
-                  enable = true;
-                  serverPort = 8080;
-                  upstreams = [
-                    {
-                      name = "api";
-                      target = "10.233.4.3";
-                      port = 4000;
-                    }
-                  ];
-                  airlock = true;
+  mkTlsEval =
+    innerExtra:
+    inputs.nixpkgs.lib.nixosSystem {
+      inherit system;
+      modules = [
+        shimModule
+        (
+          { config, ... }:
+          {
+            inherit
+              (self.lib.mkContainer {
+                inherit config;
+                name = "demo-tls";
+                cfg = {
+                  ip = "10.233.4.2/24";
+                  hostBridge = "cbr0";
+                  tls = {
+                    enable = true;
+                    serverPort = 8080;
+                    upstreams = [
+                      {
+                        name = "api";
+                        target = "10.233.4.3";
+                        port = 4000;
+                      }
+                    ];
+                    airlock = true;
+                  };
                 };
-              };
-              innerConfig.system.stateVersion = "25.11";
-            })
-            containers
-            ;
-          system.stateVersion = "25.11";
-        }
-      )
-    ];
-  };
-  tlsInner = tlsFactoryEval.config.containers.demo-tls.config;
+                innerConfig = {
+                  system.stateVersion = "25.11";
+                }
+                // innerExtra;
+              })
+              containers
+              ;
+            system.stateVersion = "25.11";
+          }
+        )
+      ];
+    };
+  tlsInner = (mkTlsEval { }).config.containers.demo-tls.config;
+  tlsInnerNoV6 = (mkTlsEval { networking.enableIPv6 = false; }).config.containers.demo-tls.config;
 
   manifestFile = pkgs.writeText "manifest.json" (
     builtins.toJSON {
@@ -344,6 +350,7 @@ in
   tls-sidecar =
     let
       text = tlsInner.environment.etc."caddy-sidecar/Caddyfile".text;
+      textNoV6 = tlsInnerNoV6.environment.etc."caddy-sidecar/Caddyfile".text;
       caddyfile = pkgs.writeText "Caddyfile" text;
       nft = tlsInner.networking.nftables.tables.zt-factory.content;
     in
@@ -360,6 +367,12 @@ in
             ""
           else
             throw "tls.airlock: output and forward chains must both reject"
+        }
+        ${
+          if lib.hasInfix "[::1]" text && !(lib.hasInfix "[::1]" textNoV6) then
+            ""
+          else
+            throw "tls upstream: [::1] must be bound exactly when IPv6 is on"
         }
         HOME=$TMPDIR caddy adapt --adapter caddyfile --config ${caddyfile} > adapted.json
         # Every :4000 listener must be loopback, and there must be one.

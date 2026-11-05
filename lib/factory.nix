@@ -56,10 +56,10 @@ let
   # Outbound: localhost:<port> -> <target>:443 over mTLS. The server cert is
   # checked against the internal CA by its SAN (the upstream's name, hence
   # tls_server_name); this container presents the shared client cert, so the
-  # listener stays on loopback.
-  mkUpstreamBlock = upstream: ''
+  # listener stays on loopback. [::1] only with IPv6: Caddy aborts on a failed bind.
+  mkUpstreamBlock = ipv6: upstream: ''
     :${toString upstream.port} {
-      bind 127.0.0.1 [::1]
+      bind 127.0.0.1${lib.optionalString ipv6 " [::1]"}
       reverse_proxy ${upstream.target}:443 {
         header_up Host ${upstream.name}
         transport http {
@@ -74,7 +74,7 @@ let
     }
   '';
 
-  upstreamBlocks = lib.concatMapStringsSep "\n" mkUpstreamBlock upstreams;
+  upstreamBlocks = ipv6: lib.concatMapStringsSep "\n" (mkUpstreamBlock ipv6) upstreams;
   upstreamPorts = map (u: u.port) upstreams;
 
   # Inbound: :443 terminates mTLS with this container's cert, requires a client
@@ -99,14 +99,14 @@ let
     else
       "";
 
-  sidecarCaddyfile = ''
+  sidecarCaddyfile = ipv6: ''
     {
       auto_https off
       admin off
     }
 
     ${inboundBlock}
-    ${upstreamBlocks}
+    ${upstreamBlocks ipv6}
   '';
 
   # Firewall exceptions: allow outbound to each upstream (nftables)
@@ -353,7 +353,7 @@ in
                 };
               };
 
-              environment.etc."caddy-sidecar/Caddyfile".text = sidecarCaddyfile;
+              environment.etc."caddy-sidecar/Caddyfile".text = sidecarCaddyfile args.config.networking.enableIPv6;
             })
 
             # usesPodman boilerplate: podman itself + its own
