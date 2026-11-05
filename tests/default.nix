@@ -1,6 +1,7 @@
 # Tests for lib.mkContainer + nixosModules.updater/.host:
 #   happy-path      VM: manifest fetch -> realise -> symlink swap -> start,
-#                   on a real factory-built closure.
+#                   on a real factory-built closure; the container journal
+#                   reaches the host, readable without root, across restarts.
 #   bad-manifest    VM: an unfetchable manifest fails staging and the
 #                   container stays stopped.
 #   podman-nesting  eval only (VM tests have no network for image pulls):
@@ -41,6 +42,11 @@ let
 
   demoInnerConfig = {
     system.stateVersion = "25.11";
+    systemd.services.journal-probe = {
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig.Type = "oneshot";
+      script = "echo gantry-journal-probe";
+    };
   };
 
   # Factory build: no container-updater registration, so isStandalone is false
@@ -108,9 +114,16 @@ let
         subnet = "10.233.1.0/24";
         hostAddress = "10.233.1.1";
         inherit manifestUrl;
+        # Explicit, so a nixpkgs without forwarding fails here instead of skipping.
+        journal.forward = true;
       };
 
       my.services.container-updater.containers = [ "demo" ];
+
+      users.users.reader = {
+        isNormalUser = true;
+        extraGroups = [ "systemd-journal" ];
+      };
 
       networking.firewall.enable = false;
       system.stateVersion = "25.11";
@@ -137,6 +150,37 @@ in
       # already-running container is a separate behavior from the
       # stage/activate mechanism this test is about.)
       host.succeed("systemctl start --wait update-container@demo.service")
+
+      # The guest journal is forwarded to the host, readable by the
+      # systemd-journal group, and keeps every boot of the ephemeral root:
+      # one probe line per container boot, none lost or duplicated.
+      import json
+      from datetime import timedelta
+
+      def probe_boots():
+          out = host.succeed(
+              "runuser -u reader -- journalctl -D /var/log/containers/demo"
+              " MESSAGE=gantry-journal-probe -o json --no-pager"
+          )
+          boots = [json.loads(l)["_BOOT_ID"] for l in out.splitlines() if l]
+          assert len(boots) == len(set(boots)), f"duplicate probe lines: {boots}"
+          return len(boots)
+
+      host.wait_until_succeeds(
+          "runuser -u reader -- journalctl -D /var/log/containers/demo"
+          " MESSAGE=gantry-journal-probe -q --no-pager | grep -q .",
+          timeout=timedelta(seconds=120),
+      )
+      before = probe_boots()
+      host.succeed("machinectl stop demo")
+      host.wait_until_fails("systemctl is-active container@demo.service")
+      host.succeed("systemctl start container@demo.service")
+      host.wait_until_succeeds(
+          f"test $(runuser -u reader -- journalctl -D /var/log/containers/demo"
+          f" MESSAGE=gantry-journal-probe -q --no-pager | wc -l) -gt {before}",
+          timeout=timedelta(seconds=120),
+      )
+      assert probe_boots() == before + 1
     '';
   };
 
