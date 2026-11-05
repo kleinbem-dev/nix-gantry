@@ -305,6 +305,7 @@ in
               # the unit into "failed" state so crash-loops don't run silently.
               # A hung service is killed by the guest's own systemd, well inside
               # container@'s TimeoutStopSec, so the guest still shuts down cleanly.
+              # upstream: systemd/systemd#36455
               systemd.settings.Manager = {
                 DefaultStartLimitIntervalSec = "15m";
                 DefaultStartLimitBurst = 5;
