@@ -36,7 +36,8 @@ See [README's Versioning section](README.md#versioning) for what
   `--substituter` caches: every path has to be in one of them. The old
   `nix build --dry-run` check passed for every container, cached or not.
   With `--trusted-public-keys` (workflow input `trusted-public-keys`, your
-  hosts' keys) every path also has to carry a signature from one of them.
+  hosts' keys) every path also has to carry a signature from one of them;
+  content-addressed paths pass unsigned, as they do on the hosts.
   Several `--substituter`s now all apply (only the last one did), and
   signature checks are no longer turned off.
 - `publish-manifest.yaml` builds a matrix from the `configs` keys (a map

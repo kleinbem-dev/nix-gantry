@@ -3,7 +3,8 @@
 # `config.containers` and print { "<system>": { "<name>": "<store-path>" } }.
 # A container goes in only if every path of its closure is in one of the
 # --substituter caches and, with --trusted-public-keys (the hosts' keys), is
-# signed by one of them. Anything else is skipped (logged to stderr) instead of
+# signed by one of them (content-addressed paths need no signature, as on the
+# hosts). Anything else is skipped (logged to stderr) instead of
 # failing the run, unless a substituter can't be queried at all: then the run
 # fails, so an outage never publishes an emptied manifest. Without
 # --substituter the cache check is skipped.

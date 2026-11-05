@@ -31,7 +31,7 @@ on:
         required: true
         type: string
       trusted-public-keys:
-        description: "Space-separated keys your hosts trust (their nix.conf trusted-public-keys); every closure path must be signed by one. Empty checks presence only."
+        description: "Space-separated keys your hosts trust (their nix.conf trusted-public-keys); every closure path must be signed by one, except content-addressed paths, which Nix (and so the hosts) accepts unsigned. Empty checks presence only."
         required: false
         type: string
         default: ""
