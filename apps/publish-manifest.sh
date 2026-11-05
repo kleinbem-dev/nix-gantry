@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # publish-manifest: build one system's containers from a nixosConfiguration's
 # `config.containers` and print { "<system>": { "<name>": "<store-path>" } }.
-# A container that fails to build or isn't cache-reachable is skipped (logged
-# to stderr) instead of failing the run. ../.github/workflows/publish-manifest.yaml
+# A container that fails to build or is in none of the --substituter caches is
+# skipped (logged to stderr) instead of failing the run; without --substituter
+# the cache check is skipped. ../.github/workflows/publish-manifest.yaml
 # merges the per-system fragments and publishes the manifest.
 #
 # Usage:
@@ -35,10 +36,12 @@ CONFIG_ATTR="${FLAKE_REF}#nixosConfigurations.${CONFIG}.config.containers"
 echo "Evaluating container names from ${CONFIG_ATTR}..." >&2
 CONTAINER_NAMES=$(nix eval --json "${CONFIG_ATTR}" --apply builtins.attrNames)
 
+# One extra-substituters value: a repeated --option keeps only the last.
+# Signatures stay checked against the trusted-public-keys in nix.conf.
 SUBSTITUTER_ARGS=()
-for s in "${SUBSTITUTERS[@]:-}"; do
-  [ -n "$s" ] && SUBSTITUTER_ARGS+=(--option substituters "$s" --option require-sigs false)
-done
+if [ "${#SUBSTITUTERS[@]}" -gt 0 ]; then
+  SUBSTITUTER_ARGS=(--option extra-substituters "${SUBSTITUTERS[*]}")
+fi
 
 FRAGMENT="{}"
 for name in $(echo "$CONTAINER_NAMES" | jq -r '.[]'); do
@@ -57,13 +60,26 @@ for name in $(echo "$CONTAINER_NAMES" | jq -r '.[]'); do
     }
   fi
 
-  echo "Verifying ${name} is cache-reachable..." >&2
-  if ! nix build --dry-run "${path_attr}" "${SUBSTITUTER_ARGS[@]}" 2>/dev/null; then
-    echo "  ${name}: not yet cache-verified, dropping from this fragment" >&2
-    continue
-  fi
-
   store_path=$(nix eval --raw "${path_attr}")
+
+  # Ask the caches themselves: the local build just made the path valid here,
+  # so anything that looks at the local store always says yes.
+  if [ "${#SUBSTITUTERS[@]}" -gt 0 ]; then
+    echo "Verifying ${name} is cache-reachable..." >&2
+    cached=0
+    for s in "${SUBSTITUTERS[@]}"; do
+      if nix path-info --store "$s" "$store_path" >/dev/null 2>&1; then
+        cached=1
+        break
+      fi
+    done
+    if [ "$cached" -eq 0 ]; then
+      echo "  ${name}: in none of the substituters, dropping from this fragment" >&2
+      continue
+    fi
+  else
+    echo "  ${name}: no --substituter given, cache check skipped" >&2
+  fi
   FRAGMENT=$(echo "$FRAGMENT" | jq --arg n "$name" --arg p "$store_path" '. + {($n): $p}')
 done
 

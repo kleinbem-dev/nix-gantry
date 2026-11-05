@@ -16,6 +16,23 @@ See [README's Versioning section](README.md#versioning) for what
   need systemd 256 or newer; older ones keep their journal inside the
   container as before.
 
+**Breaking:**
+- The reusable `publish-manifest.yaml` workflow requires `substituters`
+  (was defaulting to `https://cache.nixos.org`, which never holds a
+  container closure) and needs `permissions: contents: write` from the
+  caller. It runs `publish-manifest` from the caller's locked `nix-gantry`
+  input (`gantry-input`, default `nix-gantry`) instead of the caller's own
+  flake, which never had the app.
+
+**Fixed:**
+- `apps.publish-manifest` checks each `--substituter` with
+  `nix path-info --store`. The old `nix build --dry-run` check passed for
+  every container, cached or not. Several `--substituter`s now all apply
+  (only the last one did), and signature checks are no longer turned off.
+- `publish-manifest.yaml` builds a matrix from the `configs` keys (a map
+  can't be a matrix), passes inputs through `env:` instead of splicing them
+  into scripts, and gives `gh` the repository in the job without a checkout.
+
 ## v0.2.0
 
 **Added:**
