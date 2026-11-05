@@ -11,8 +11,10 @@ See [README's Versioning section](README.md#versioning) for what
   `/var/log/containers/<name>`, survives the ephemeral root's restarts and
   is readable by the `systemd-journal` group with `journalctl -D`. Set by
   `my.container-host.journal.forward` (on with systemd 261 or newer) and
-  capped by `my.container-host.journal.maxUse` (default `256M`). On an
-  impermanent host, persist `/var/log/containers`.
+  capped by `my.container-host.journal.maxUse` (default `256M`).
+  `nixosModules.host-persistence` persists `/var/log/containers`. Guests
+  need systemd 256 or newer; older ones keep their journal inside the
+  container as before.
 
 ## v0.2.0
 

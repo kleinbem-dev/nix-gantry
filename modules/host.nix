@@ -105,7 +105,9 @@ in
           Stream each container's journal to /var/log/containers/<name> on the
           host (nspawn --forward-journal, needs systemd 261 or newer). Readable by the
           systemd-journal group with `journalctl -D`, and it survives container
-          restarts. On an impermanent host, persist /var/log/containers.
+          restarts. Guests need systemd 256 or newer; an older guest ignores the
+          forwarding and keeps its journal inside the container. With
+          enablePersistence, nixosModules.host-persistence persists the directory.
         '';
       };
       maxUse = lib.mkOption {

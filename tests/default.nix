@@ -114,6 +114,8 @@ let
         subnet = "10.233.1.0/24";
         hostAddress = "10.233.1.1";
         inherit manifestUrl;
+        # Explicit, so a nixpkgs without forwarding fails here instead of skipping.
+        journal.forward = true;
       };
 
       my.services.container-updater.containers = [ "demo" ];

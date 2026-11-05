@@ -38,6 +38,6 @@ in
           )
         ) (lib.attrNames config.my.containers);
       in
-      lib.unique containerDirs;
+      lib.unique containerDirs ++ lib.optional cfg.journal.forward "/var/log/containers";
   };
 }
