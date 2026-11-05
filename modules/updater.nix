@@ -42,7 +42,7 @@ let
       parts = builtins.split "([0-9]+) *([a-z]*)" t;
       tokens = lib.filter builtins.isList parts;
       rest = lib.concatStrings (lib.filter builtins.isString parts);
-      n = tok: lib.toInt (lib.head tok);
+      n = tok: lib.toIntBase10 (lib.head tok);
       u = tok: lib.elemAt tok 1;
       # Sub-second units round up: an upper bound must not shrink.
       sec =
@@ -52,20 +52,24 @@ let
         else
           n tok
           * (unitSeconds.${u tok} or (throw "nix-gantry: unknown time unit in container timeout \"${t}\""));
+      total = lib.foldl' (acc: tok: acc + sec tok) 0 tokens;
     in
+    # null means unbounded: systemd reads both "infinity" and 0 as no timeout.
     if t == "infinity" then
       null
     else if tokens == [ ] || builtins.match " *" rest == null then
       throw "nix-gantry: can't read container timeout \"${t}\"; use e.g. \"90s\", \"15min\" or \"1h 30min\""
+    else if total == 0 then
+      null
     else
-      lib.foldl' (acc: tok: acc + sec tok) 0 tokens;
+      total;
   subSecond = {
     ms = 1000;
     msec = 1000;
     us = 1000000;
     usec = 1000000;
   };
-  # The largest limit, or null when any container's is "infinity".
+  # The largest limit, or null when any container's is unbounded.
   maxOf = floor: ts: if builtins.elem null ts then null else lib.foldl' lib.max floor ts;
   maxStartSec = maxOf 60 (map (c: toSeconds config.containers.${c}.timeoutStartSec) registered);
   # container@'s TimeoutStopSec (lib.mkContainer sets one); 90s is systemd's default.

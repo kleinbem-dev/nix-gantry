@@ -18,7 +18,7 @@ See [README's Versioning section](README.md#versioning) for what
 - `update-container-activate@` and `update-container-rollback@` count each
   restart as the slowest `container@` stop plus the slowest start, so the
   longer stop can't time out an activation or a rollback. A container with
-  `TimeoutStopSec` or `timeoutStartSec` set to `infinity` makes both
+  `TimeoutStopSec` or `timeoutStartSec` set to `infinity` or `0` makes both
   unbounded; sub-second units (`ms`, `us`) round up instead of failing
   evaluation.
 
