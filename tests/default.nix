@@ -3,7 +3,8 @@
 #                   on a real factory-built closure; rollback without a
 #                   previous generation fails; a closure that doesn't start
 #                   is rolled back; the container journal
-#                   reaches the host, readable without root, across restarts.
+#                   reaches the host, readable without root, across restarts,
+#                   and the guest still gets cgroup controllers (pids for podman).
 #   bad-manifest    VM: an unfetchable manifest fails staging, the
 #                   container stays stopped and the nightly unit fails.
 #   podman-nesting  eval only (VM tests have no network for image pulls):
@@ -250,6 +251,14 @@ in
           timeout=timedelta(seconds=120),
       )
       assert probe_boots() == before + 1
+
+      # With forwarding on, the guest still gets cgroup controllers delegated:
+      # podman/crun inside need pids. journal-remote must not sit in the
+      # unit's top cgroup, or nspawn can't enable them for payload/.
+      cg = "/sys/fs/cgroup/machine.slice/container@demo.service"
+      host.succeed(f"test -z \"$(cat {cg}/cgroup.procs)\"")
+      host.succeed(f"grep -qw pids {cg}/payload/cgroup.controllers")
+      host.succeed(f"grep -qw memory {cg}/payload/cgroup.controllers")
     '';
   };
 

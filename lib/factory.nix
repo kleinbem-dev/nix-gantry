@@ -529,6 +529,11 @@ in
         # nspawn leaves its unix-export mount, and the next start refuses it.
         # upstream: systemd/systemd#36455
         TimeoutStopSec = lib.mkDefault "150s";
+        # As systemd-nspawn@.service does; nixpkgs' container@ lacks it. Without
+        # it --forward-journal's journal-remote stays in the unit's top cgroup,
+        # nspawn can't delegate controllers to payload/, and podman fails
+        # ("controller pids is not available").
+        DelegateSubgroup = "supervisor";
       }
       (mkIf
         (

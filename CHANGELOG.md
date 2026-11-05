@@ -6,6 +6,13 @@ See [README's Versioning section](README.md#versioning) for what
 ## Unreleased
 
 **Fixed:**
+- Podman inside a container works again with journal forwarding on.
+  nspawn forks `systemd-journal-remote` before it moves itself into
+  `supervisor/`, so the receiver stayed in the unit's top cgroup and nspawn
+  couldn't delegate controllers to the guest: crun failed with "controller
+  `pids` is not available". `container@` now sets
+  `DelegateSubgroup=supervisor`, as systemd's own `systemd-nspawn@.service`
+  does.
 - A guest service that hangs on stop usually no longer gets the whole
   container SIGKILLed. Guest units default to a 45s stop timeout and
   `container@` waits 150s (above postgresql's 120s), so the guest's own
