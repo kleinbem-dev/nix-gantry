@@ -5,6 +5,14 @@ See [README's Versioning section](README.md#versioning) for what
 
 ## Unreleased
 
+**Fixed:**
+- A guest service that hangs on stop no longer gets the whole container
+  SIGKILLed. Guest units default to a 45s stop timeout and `container@` waits
+  150s (above postgresql's 120s), so the guest shuts down cleanly. A killed
+  nspawn leaves its unix-export mount behind, and the next start failed with
+  "Mount point … exists already, refusing" (systemd/systemd#36455). Both
+  are `mkDefault`.
+
 **Added:**
 - Container journals reach the host. `lib.mkContainer` passes nspawn
   `--forward-journal`, so each container's journal lands in
