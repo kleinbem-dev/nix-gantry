@@ -32,6 +32,24 @@ See [README's Versioning section](README.md#versioning) for what
 - `publish-manifest.yaml` builds a matrix from the `configs` keys (a map
   can't be a matrix), passes inputs through `env:` instead of splicing them
   into scripts, and gives `gh` the repository in the job without a checkout.
+- `update-containers` (the nightly run) fails when any stage or activation
+  failed. It exited 0 because a bare `wait` drops background failures.
+- `update-container-rollback@` and `autoRollback` report a rollback only
+  when one happened. With a single generation and no `previous` link they
+  restarted the container and claimed success.
+- Healthchecks run with `curl` on `PATH`, so the documented
+  `curl -fsS ...` example works instead of always failing and rolling back.
+- Staging from the activation script creates `/run/container-updater` and
+  the profiles directory itself (tmpfiles hasn't run yet) and runs after
+  `etc`, so `nix.conf` is in place.
+- `/var/lib/machines/<name>/current` is replaced by rename, and only when it
+  doesn't already point at the profile, so a container start never finds it
+  missing.
+- Activation restarts a running container with `systemctl restart
+  container@<name>`, which waits for the new boot. `machinectl restart`
+  returned mid-reboot, so the health wait could pass on the old instance.
+- `nixosModules.host` no longer defines the empty
+  `service-container-updater` unit.
 
 ## v0.2.0
 

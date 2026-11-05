@@ -1,9 +1,10 @@
 # Tests for lib.mkContainer + nixosModules.updater/.host:
 #   happy-path      VM: manifest fetch -> realise -> symlink swap -> start,
-#                   on a real factory-built closure; the container journal
+#                   on a real factory-built closure; rollback without a
+#                   previous generation fails; the container journal
 #                   reaches the host, readable without root, across restarts.
-#   bad-manifest    VM: an unfetchable manifest fails staging and the
-#                   container stays stopped.
+#   bad-manifest    VM: an unfetchable manifest fails staging, the
+#                   container stays stopped and the nightly unit fails.
 #   podman-nesting  eval only (VM tests have no network for image pulls):
 #                   usesPodman wires the storage mount, CAP_BPF, /dev/fuse.
 #   egress-replies  eval only: egress replies are accepted before the LAN drop.
@@ -151,6 +152,10 @@ in
       # stage/activate mechanism this test is about.)
       host.succeed("systemctl start --wait update-container@demo.service")
 
+      # One generation, no `previous`: rollback must fail and leave demo running.
+      host.fail("systemctl start --wait update-container-rollback@demo.service")
+      host.succeed("systemctl is-active container@demo.service")
+
       # The guest journal is forwarded to the host, readable by the
       # systemd-journal group, and keeps every boot of the ephemeral root:
       # one probe line per container boot, none lost or duplicated.
@@ -201,6 +206,9 @@ in
       # crash-looping against a target that doesn't exist.
       host.fail("systemctl is-active container@demo.service")
       host.fail("test -e /var/lib/machines/demo/current")
+
+      # The nightly run reports the failed stage instead of exiting 0.
+      host.fail("systemctl start update-containers.service")
     '';
   };
 

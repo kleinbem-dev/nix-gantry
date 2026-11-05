@@ -28,7 +28,7 @@ true
 ```
 
 *Declared by:*
- - [/nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host\.nix](file:///nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host.nix)
+ - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
 
 
 
@@ -60,7 +60,7 @@ true
 ```
 
 *Declared by:*
- - [/nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host\.nix](file:///nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host.nix)
+ - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
 
 
 
@@ -82,7 +82,7 @@ string
 ```
 
 *Declared by:*
- - [/nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host\.nix](file:///nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host.nix)
+ - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
 
 
 
@@ -110,7 +110,7 @@ list of string
 ```
 
 *Declared by:*
- - [/nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host\.nix](file:///nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host.nix)
+ - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
 
 
 
@@ -150,7 +150,7 @@ list of string
 ```
 
 *Declared by:*
- - [/nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host\.nix](file:///nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host.nix)
+ - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
 
 
 
@@ -174,7 +174,7 @@ string
 ```
 
 *Declared by:*
- - [/nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host\.nix](file:///nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host.nix)
+ - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
 
 
 
@@ -203,7 +203,7 @@ lib.versionAtLeast config.systemd.package.version "261"
 ```
 
 *Declared by:*
- - [/nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host\.nix](file:///nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host.nix)
+ - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
 
 
 
@@ -227,7 +227,7 @@ string
 ```
 
 *Declared by:*
- - [/nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host\.nix](file:///nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host.nix)
+ - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
 
 
 
@@ -253,7 +253,7 @@ string
 ```
 
 *Declared by:*
- - [/nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host\.nix](file:///nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host.nix)
+ - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
 
 
 
@@ -277,7 +277,7 @@ string
 ```
 
 *Declared by:*
- - [/nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host\.nix](file:///nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/host.nix)
+ - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
 
 
 
@@ -309,7 +309,7 @@ true
 ```
 
 *Declared by:*
- - [/nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/updater\.nix](file:///nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/updater.nix)
+ - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater.nix)
 
 
 
@@ -334,7 +334,7 @@ true
 ```
 
 *Declared by:*
- - [/nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/updater\.nix](file:///nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/updater.nix)
+ - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater.nix)
 
 
 
@@ -358,7 +358,7 @@ list of string
 ```
 
 *Declared by:*
- - [/nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/updater\.nix](file:///nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/updater.nix)
+ - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater.nix)
 
 
 
@@ -388,7 +388,7 @@ list of string
 ```
 
 *Declared by:*
- - [/nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/updater\.nix](file:///nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/updater.nix)
+ - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater.nix)
 
 
 
@@ -413,7 +413,7 @@ positive integer, meaning >0
 ```
 
 *Declared by:*
- - [/nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/updater\.nix](file:///nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/updater.nix)
+ - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater.nix)
 
 
 
@@ -422,7 +422,8 @@ positive integer, meaning >0
 
 
 Optional custom healthcheck shell command per container name to verify service health\.
-Executed on the host; must exit 0 when healthy\.
+Executed on the host, with systemd, nix, coreutils and curl on PATH;
+must exit 0 when healthy\.
 Example: { “caddy” = “curl -fsS http://10\.85\.46\.107:80/health”; }
 
 
@@ -439,7 +440,7 @@ attribute set of string
 ```
 
 *Declared by:*
- - [/nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/updater\.nix](file:///nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/updater.nix)
+ - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater.nix)
 
 
 
@@ -461,6 +462,6 @@ path from the binary cache\.
 string
 
 *Declared by:*
- - [/nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/updater\.nix](file:///nix/store/0dj089l481nfhxr9i1dw5dw3l0yk58sq-source/modules/updater.nix)
+ - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater.nix)
 
 

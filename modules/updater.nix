@@ -15,13 +15,24 @@ let
   # with `systemctl start update-container@<name>`.
   nightly = lib.subtractLists cfg.excludeFromNightly registered;
 
+  # Replace a symlink by rename, so a container start never sees it missing.
+  swapLinkFn = ''
+    swap_link() {
+      ln -sfn "$1" "$2.new"
+      mv -Tf "$2.new" "$2"
+    }
+  '';
+
   # Fetch manifest, substitute from cache, register a Nix profile, swap the
   # current symlink; never touches the running container. Also used by the
   # activation script below, which has no PATH, hence full store paths.
   stageScript = pkgs.writeShellScript "container-stage" ''
     set -euo pipefail
+    ${swapLinkFn}
     CONTAINER=$1
     echo "Staging update for container: $CONTAINER (system: ${hostSystem})"
+    # Activation can run this before systemd-tmpfiles has created these.
+    mkdir -p /nix/var/nix/profiles/containers /run/container-updater
 
     echo "Fetching manifest ${cfg.manifestUrl}..."
     MANIFEST=$(${pkgs.curl}/bin/curl -fsSL --retry 3 --max-time 60 "${cfg.manifestUrl}")
@@ -58,8 +69,10 @@ let
     echo "Registering $CONTAINER as a Nix profile (GC safe)..."
     ${pkgs.nix}/bin/nix-env --profile "$PROFILE" --set "$STORE_PATH"
 
-    echo "Updating symlink /var/lib/machines/$CONTAINER/current..."
-    ln -sfn "$PROFILE" "/var/lib/machines/$CONTAINER/current"
+    if [ "$(readlink "/var/lib/machines/$CONTAINER/current" 2>/dev/null)" != "$PROFILE" ]; then
+      echo "Pointing /var/lib/machines/$CONTAINER/current at $PROFILE..."
+      swap_link "$PROFILE" "/var/lib/machines/$CONTAINER/current"
+    fi
 
     if [ "$OLD_PATH" != "$STORE_PATH" ]; then
       touch "/run/container-updater/changed-$CONTAINER"
@@ -93,16 +106,37 @@ let
     else
       "";
 
+  # Roll back via the Nix profile, else via the `previous` symlink. Returns
+  # non-zero if neither worked (e.g. a profile with only one generation).
+  rollbackFn = ''
+    roll_back() {
+      local profile="/nix/var/nix/profiles/containers/$1"
+      local previous="/var/lib/machines/$1/previous"
+      if ${pkgs.nix}/bin/nix-env --profile "$profile" --rollback 2>/dev/null; then
+        echo "Rolled back Nix profile $profile to previous generation."
+      elif [ -e "$previous" ]; then
+        echo "Falling back to previous symlink: $previous"
+        swap_link "$(readlink -f "$previous")" "/var/lib/machines/$1/current"
+      else
+        echo "No previous generation available for $1."
+        return 1
+      fi
+    }
+  '';
+
   activateScript = pkgs.writeShellScript "container-activate" ''
     set -euo pipefail
+    ${swapLinkFn}
+    ${rollbackFn}
     CONTAINER=$1
-    PROFILE="/nix/var/nix/profiles/containers/$CONTAINER"
 
     echo "Activating staged update for container: $CONTAINER"
 
     if machinectl status "$CONTAINER" >/dev/null 2>&1; then
       echo "Restarting container $CONTAINER to apply staged update..."
-      machinectl restart "$CONTAINER" 2>/dev/null || systemctl restart "container@$CONTAINER"
+      # Not machinectl restart: it returns mid-reboot, while container@ still
+      # looks active, so the check below passed before the new closure ran.
+      systemctl restart "container@$CONTAINER"
     else
       echo "Container $CONTAINER is not currently running. Starting it..."
       systemctl start "container@$CONTAINER"
@@ -142,21 +176,11 @@ let
     echo "Healthcheck FAILED for container $CONTAINER after ''${elapsed}s!"
 
     ${lib.optionalString cfg.autoRollback ''
-      PREVIOUS="/var/lib/machines/$CONTAINER/previous"
-      if [ -e "$PREVIOUS" ] || [ -e "$PROFILE-1-link" ]; then
-        echo "Initiating automatic rollback for $CONTAINER..."
-        if ${pkgs.nix}/bin/nix-env --profile "$PROFILE" --rollback 2>/dev/null; then
-          echo "Rolled back Nix profile $PROFILE to previous generation."
-        elif [ -e "$PREVIOUS" ]; then
-          echo "Falling back to previous symlink: $PREVIOUS"
-          ln -sfn "$(readlink -f "$PREVIOUS")" "/var/lib/machines/$CONTAINER/current"
-        fi
-
+      echo "Initiating automatic rollback for $CONTAINER..."
+      if roll_back "$CONTAINER"; then
         echo "Restarting container@$CONTAINER on restored closure..."
         systemctl restart "container@$CONTAINER" || true
         echo "Rollback completed for $CONTAINER."
-      else
-        echo "No previous generation available for $CONTAINER to roll back to!"
       fi
     ''}
 
@@ -166,26 +190,15 @@ let
 
   rollbackScript = pkgs.writeShellScript "container-rollback" ''
     set -euo pipefail
+    ${swapLinkFn}
+    ${rollbackFn}
     CONTAINER=$1
-    PROFILE="/nix/var/nix/profiles/containers/$CONTAINER"
-    PREVIOUS="/var/lib/machines/$CONTAINER/previous"
 
     echo "Rollback requested for container: $CONTAINER"
-    if [ -e "$PREVIOUS" ] || [ -e "$PROFILE-1-link" ]; then
-      if ${pkgs.nix}/bin/nix-env --profile "$PROFILE" --rollback 2>/dev/null; then
-        echo "Rolled back Nix profile $PROFILE to previous generation."
-      elif [ -e "$PREVIOUS" ]; then
-        echo "Updating current symlink back to previous target..."
-        ln -sfn "$(readlink -f "$PREVIOUS")" "/var/lib/machines/$CONTAINER/current"
-      fi
-
-      echo "Restarting container@$CONTAINER on restored closure..."
-      systemctl restart "container@$CONTAINER"
-      echo "Rollback completed for $CONTAINER."
-    else
-      echo "No previous generation available for $CONTAINER."
-      exit 1
-    fi
+    roll_back "$CONTAINER"
+    echo "Restarting container@$CONTAINER on restored closure..."
+    systemctl restart "container@$CONTAINER"
+    echo "Rollback completed for $CONTAINER."
   '';
 in
 {
@@ -243,7 +256,8 @@ in
       default = { };
       description = ''
         Optional custom healthcheck shell command per container name to verify service health.
-        Executed on the host; must exit 0 when healthy.
+        Executed on the host, with systemd, nix, coreutils and curl on PATH;
+        must exit 0 when healthy.
         Example: { "caddy" = "curl -fsS http://10.85.46.107:80/health"; }
       '';
     };
@@ -279,10 +293,12 @@ in
         "update-container-activate@" = {
           description = "Activate staged update for NixOS Container %i (restart + healthcheck)";
 
+          # curl for healthchecks like the example in `healthchecks`.
           path = with pkgs; [
             systemd
             nix
             coreutils
+            curl
           ];
 
           scriptArgs = "%i";
@@ -351,16 +367,28 @@ in
             TimeoutStartSec = "1h";
           };
 
+          # A failed container doesn't stop the others, but fails the unit at the end.
           script = ''
-            set -e
             CONTAINERS="${lib.concatStringsSep " " nightly}"
+            failed=0
+            pids=()
+
+            # Waits for the jobs in pids; records any failure.
+            wait_all() {
+              local pid
+              for pid in "''${pids[@]}"; do
+                wait "$pid" || failed=1
+              done
+              pids=()
+            }
 
             echo "=== Phase 1: staging updates for all containers in parallel ==="
             for c in $CONTAINERS; do
               echo "  staging $c..."
               systemctl start --wait "update-container-stage@$c.service" &
+              pids+=("$!")
             done
-            wait
+            wait_all
             echo "All stages complete."
 
             needs_activation() {
@@ -376,16 +404,21 @@ in
               if [ "$c" != "attic" ] && needs_activation "$c"; then
                 echo "  activating $c..."
                 systemctl start --wait "update-container-activate@$c.service" &
+                pids+=("$!")
               fi
             done
-            wait
+            wait_all
             echo "Non-attic activations complete."
 
-            if echo " $CONTAINERS " | grep -q " attic " && needs_activation attic; then
+            if [[ " $CONTAINERS " == *" attic "* ]] && needs_activation attic; then
               echo "=== Phase 3: activating attic last ==="
-              systemctl start --wait "update-container-activate@attic.service"
+              systemctl start --wait "update-container-activate@attic.service" || failed=1
             fi
 
+            if [ "$failed" -ne 0 ]; then
+              echo "Bulk update finished with failures; see update-container-stage@/activate@ logs."
+              exit 1
+            fi
             echo "Bulk update complete."
           '';
         };
@@ -441,14 +474,20 @@ in
     # (never restart) missing containers here, before the unit restarts. It
     # blocks the switch, but only does work the first time; otherwise a no-op.
     system.activationScripts.container-updater-stage-missing = lib.mkIf (registered != [ ]) (
-      lib.stringAfter [ "var" ] ''
-        for c in ${lib.concatStringsSep " " registered}; do
-          if [ ! -e "/var/lib/machines/$c/current" ]; then
-            echo "container-updater: $c has no staged closure yet — staging before activation continues..."
-            ${stageScript} "$c" || echo "container-updater: staging $c failed during activation; it will retry on the nightly timer or next boot."
-          fi
-        done
-      ''
+      # etc: nix-store --realise reads /etc/nix/nix.conf.
+      lib.stringAfter
+        [
+          "etc"
+          "var"
+        ]
+        ''
+          for c in ${lib.concatStringsSep " " registered}; do
+            if [ ! -e "/var/lib/machines/$c/current" ]; then
+              echo "container-updater: $c has no staged closure yet — staging before activation continues..."
+              ${stageScript} "$c" || echo "container-updater: staging $c failed during activation; it will retry on the nightly timer or next boot."
+            fi
+          done
+        ''
     );
   };
 }
