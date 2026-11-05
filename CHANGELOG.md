@@ -62,6 +62,8 @@ See [README's Versioning section](README.md#versioning) for what
 - Evaluation fails with a clear message when a `tls.upstreams` port is used
   twice or collides with the inbound `:443`/`serverPort`, which made Caddy
   reject its config and the sidecar restart in a loop.
+- README: with a tmpfs `/var`, `/var/lib/machines` has to be persisted by
+  the host; `nixosModules.host-persistence` doesn't do it.
 
 ## v0.2.0
 
