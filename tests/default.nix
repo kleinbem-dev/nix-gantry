@@ -5,6 +5,8 @@
 #                   is rolled back; the container journal
 #                   reaches the host, readable without root, across restarts,
 #                   and the guest still gets cgroup controllers (pids for podman).
+#   health-rollback VM: a closure that boots but fails its healthcheck is
+#                   rolled back to the healthy one.
 #   bad-manifest    VM: an unfetchable manifest fails staging, the
 #                   container stays stopped and the nightly unit fails.
 #   podman-run      VM: podman inside a usesPodman container, with journal
@@ -54,32 +56,46 @@ let
       serviceConfig.Type = "oneshot";
       script = "echo gantry-journal-probe";
     };
+    # What the health-rollback test's healthcheck looks for.
+    systemd.services.health-marker = {
+      wantedBy = [ "multi-user.target" ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = "true";
+    };
   };
 
   # Factory build: no container-updater registration, so isStandalone is false
   # and .path is a real, buildable closure.
-  demoFactoryEval = inputs.nixpkgs.lib.nixosSystem {
-    inherit system;
-    modules = [
-      shimModule
-      (
-        { config, ... }:
-        {
-          inherit
-            (self.lib.mkContainer {
-              inherit config;
-              name = "demo";
-              cfg = demoCfg;
-              innerConfig = demoInnerConfig;
-            })
-            containers
-            ;
-          system.stateVersion = "25.11";
-        }
-      )
-    ];
-  };
-  demoClosure = demoFactoryEval.config.containers.demo.path;
+  mkDemoClosure =
+    innerConfig:
+    (inputs.nixpkgs.lib.nixosSystem {
+      inherit system;
+      modules = [
+        shimModule
+        (
+          { config, ... }:
+          {
+            inherit
+              (self.lib.mkContainer {
+                inherit config innerConfig;
+                name = "demo";
+                cfg = demoCfg;
+              })
+              containers
+              ;
+            system.stateVersion = "25.11";
+          }
+        )
+      ];
+    }).config.containers.demo.path;
+  demoClosure = mkDemoClosure demoInnerConfig;
+  # Boots fine, but without health-marker its healthcheck never passes.
+  unhealthyClosure = mkDemoClosure (
+    lib.recursiveUpdate demoInnerConfig { systemd.services.health-marker.enable = false; }
+  );
   # Not a NixOS system: a container started on it fails.
   brokenClosure = pkgs.writeText "not-a-system" "";
 
@@ -143,7 +159,10 @@ let
   # Host node: the same container, registered as standalone, so .path is the
   # symlink the updater swaps.
   mkHostNode =
-    { manifestUrl }:
+    {
+      manifestUrl,
+      healthchecks ? { },
+    }:
     {
       imports = [
         self.nixosModules.host
@@ -173,7 +192,10 @@ let
         journal.maxUseFor.demo = "64M";
       };
 
-      my.services.container-updater.containers = [ "demo" ];
+      my.services.container-updater = {
+        containers = [ "demo" ];
+        inherit healthchecks;
+      };
 
       users.users.reader = {
         isNormalUser = true;
@@ -344,6 +366,40 @@ in
         )
       '';
     };
+
+  health-rollback = pkgs.testers.runNixOSTest {
+    name = "nix-gantry-health-rollback";
+    nodes.host = {
+      imports = [
+        (mkHostNode {
+          manifestUrl = "file://${manifestFile}";
+          healthchecks.demo = "systemctl -M demo is-active --quiet health-marker.service";
+        })
+      ];
+      system.extraDependencies = [ unhealthyClosure ];
+      # Keeps the failing activation short; the healthy boot needs far less.
+      my.services.container-updater.healthcheckTimeoutSec = 30;
+    };
+    testScript = ''
+      start_all()
+      host.wait_for_unit("multi-user.target")
+
+      # The healthy closure passes its healthcheck.
+      host.succeed("systemctl start --wait update-container@demo.service")
+      host.succeed("systemctl -M demo is-active health-marker.service")
+
+      # A closure that boots but never turns healthy fails activation and is
+      # rolled back to the healthy one, which runs again.
+      profile = "/nix/var/nix/profiles/containers/demo"
+      host.succeed(f"nix-env --profile {profile} --set ${unhealthyClosure}")
+      host.fail("systemctl start --wait update-container-activate@demo.service")
+      host.succeed(f"test $(readlink -f {profile}) = ${demoClosure}")
+      host.wait_for_unit("container@demo.service")
+      host.wait_until_succeeds("systemctl -M demo is-active health-marker.service", timeout=60)
+      host.succeed("journalctl -u update-container-activate@demo.service -o cat --no-pager | grep -q 'Healthcheck FAILED'")
+      host.succeed("journalctl -u update-container-activate@demo.service -o cat --no-pager | grep -q 'Rollback completed for demo'")
+    '';
+  };
 
   bad-manifest = pkgs.testers.runNixOSTest {
     name = "nix-gantry-bad-manifest";
