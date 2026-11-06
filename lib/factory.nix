@@ -118,6 +118,7 @@ let
 
   # Ephemeral roots lose the guest journal on every restart and nixpkgs skips
   # --link-journal for them, so stream it to the host instead (systemd >= 261).
+  # no-link: by design, an ephemeral root has no journal directory to link.
   journalCfg = config.my.container-host.journal or { };
   forwardJournal =
     journalCfg.forward or (lib.versionAtLeast (config.systemd.package.version or "0") "261");
@@ -415,12 +416,15 @@ in
           isReadOnly = true;
         };
       })
+      # Keys only where the sidecar uses them: the server pair for the inbound
+      # listener, the shared client pair for upstreams.
       // (lib.optionalAttrs hasTls {
-        # Bind-mount PKI certificates into the container
         "/etc/pki/internal/ca.crt" = {
           hostPath = "${pkiDir}/ca.crt";
           isReadOnly = true;
         };
+      })
+      // (lib.optionalAttrs (hasTls && serverPort > 0) {
         "/etc/pki/internal/${name}.crt" = {
           hostPath = "${pkiDir}/certs/${name}.crt";
           isReadOnly = true;
@@ -429,6 +433,8 @@ in
           hostPath = "${pkiDir}/certs/${name}.key";
           isReadOnly = true;
         };
+      })
+      // (lib.optionalAttrs (hasTls && upstreams != [ ]) {
         "/etc/pki/internal/client.crt" = {
           hostPath = "${pkiDir}/certs/client.crt";
           isReadOnly = true;
@@ -509,8 +515,8 @@ in
       } - -"
     ) effectiveSubDirs);
 
-  # Resource limits, plus Restart=on-failure (nixos-containers leaves container@
-  # at Restart=no). The StartLimit guard stops a broken container looping forever.
+  # Resource limits, plus a backoff for container@'s own Restart=on-failure.
+  # The StartLimit guard stops a broken container looping forever.
   systemd.services."container@${name}" = {
     unitConfig = {
       StartLimitIntervalSec = 900;
@@ -533,6 +539,7 @@ in
         # it --forward-journal's journal-remote stays in the unit's top cgroup,
         # nspawn can't delegate controllers to payload/, and podman fails
         # ("controller pids is not available").
+        # no-link: not reported to nixpkgs yet.
         DelegateSubgroup = "supervisor";
       }
       (mkIf

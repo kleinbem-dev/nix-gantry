@@ -62,8 +62,9 @@ they just pull what a beefier CI runner already built and cache-verified.
 - **`nixosModules.host-persistence`** — optional, not part of `default`:
   wires enabled containers' `hostDataDir`s into
   [`impermanence`](https://github.com/nix-community/impermanence)'s
-  `environment.persistence`. Import it alongside impermanence itself if
-  you use it.
+  `environment.persistence`. Import it alongside impermanence itself and
+  set `my.container-host.enablePersistence = true`; without that it adds
+  nothing.
 - **`nixosModules.default`** — `updater` + `host` composed
   (`host-persistence` is opt-in, see above).
 - **`apps.publish-manifest`** — the CI-side half: builds a system's
@@ -126,7 +127,7 @@ something to check itself against:
   wires nspawn's storage bind-mount correctly; pulling actual images is
   your container's own service config, not this flake's job.
 - **Manage secrets.** Bring your own (sops-nix, agenix, ...) and bind-mount
-  or pass them in via `cfg.secretsFile`.
+  them, or pass one env file as `lib.mkContainer`'s `secretsFile` argument.
 - **Own DNS or reverse-proxy config.** A container gets an IP; how
   traffic reaches it is your concern.
 - **Orchestrate multi-container application topologies.** One

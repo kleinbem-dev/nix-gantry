@@ -1,6 +1,6 @@
-# Container host: bridge, firewall and updater wiring. Sets my.network, which
-# your own config must declare. Impermanence wiring is opt-in, in
-# ./host-persistence.nix.
+# Container host: bridge, firewall and updater wiring. Mirrors subnet and
+# hostAddress into my.network where your config declares it. Impermanence
+# wiring is opt-in, in ./host-persistence.nix.
 #
 # Usage in host config:
 #
@@ -29,6 +29,7 @@
 {
   config,
   lib,
+  options,
   ...
 }:
 
@@ -129,42 +130,48 @@ in
     enablePersistence = lib.mkEnableOption "Impermanence for container host";
   };
 
-  config = lib.mkIf cfg.enable {
-    # ─── Container Networking ───────────────────────────────────
-    my.network = {
-      inherit (cfg) subnet hostAddress;
-    };
+  config = lib.mkIf cfg.enable (
+    lib.mkMerge [
+      # Only where declared, so the module also works in a config without it.
+      (lib.optionalAttrs (options ? my.network) {
+        my.network = {
+          inherit (cfg) subnet hostAddress;
+        };
+      })
+      {
+        # ─── Container Networking ───────────────────────────────────
+        # Create the bridge empty (containers attach at start); mkDefault so a
+        # definition elsewhere wins.
+        networking.bridges.${cfg.bridge}.interfaces = lib.mkDefault [ ];
 
-    # Create the bridge empty (containers attach at start); mkDefault so a
-    # definition elsewhere wins.
-    networking.bridges.${cfg.bridge}.interfaces = lib.mkDefault [ ];
+        # ─── Firewall Rules for Container Traffic ───────────────────
+        # Allow container traffic on the bridge
+        networking.firewall = {
+          extraForwardRules = ''
+            # Allow traffic between containers on bridge
+            iifname "${cfg.bridge}" oifname "${cfg.bridge}" accept
+            # Allow containers to reach external networks
+            iifname "${cfg.bridge}" accept
+            oifname "${cfg.bridge}" accept
+          '';
+        };
 
-    # ─── Firewall Rules for Container Traffic ───────────────────
-    # Allow container traffic on the bridge
-    networking.firewall = {
-      extraForwardRules = ''
-        # Allow traffic between containers on bridge
-        iifname "${cfg.bridge}" oifname "${cfg.bridge}" accept
-        # Allow containers to reach external networks
-        iifname "${cfg.bridge}" accept
-        oifname "${cfg.bridge}" accept
-      '';
-    };
-
-    # ─── Container Auto-Update Orchestration (ADR 002) ──────────
-    # Containers are decoupled from host generation and refreshed
-    # nightly from CI-published manifest (eval-free on edge devices).
-    # Requires nixosModules.updater.
-    my.services.container-updater = {
-      enable = true;
-      inherit (cfg) manifestUrl;
-      # Real nspawn names from config.containers, not my.containers keys: a
-      # preset's container name can differ from its option name, and
-      # isStandalone in ../lib/factory.nix matches this list. Only
-      # excludeFromStandalone is subtracted here; excludeFromUpdater just skips
-      # the nightly run (removing it here would build it embedded again).
-      containers = lib.subtractLists cfg.excludeFromStandalone (lib.attrNames config.containers);
-      excludeFromNightly = cfg.excludeFromUpdater;
-    };
-  };
+        # ─── Container Auto-Update Orchestration (ADR 002) ──────────
+        # Containers are decoupled from host generation and refreshed
+        # nightly from CI-published manifest (eval-free on edge devices).
+        # Requires nixosModules.updater.
+        my.services.container-updater = {
+          enable = true;
+          inherit (cfg) manifestUrl;
+          # Real nspawn names from config.containers, not my.containers keys: a
+          # preset's container name can differ from its option name, and
+          # isStandalone in ../lib/factory.nix matches this list. Only
+          # excludeFromStandalone is subtracted here; excludeFromUpdater just skips
+          # the nightly run (removing it here would build it embedded again).
+          containers = lib.subtractLists cfg.excludeFromStandalone (lib.attrNames config.containers);
+          excludeFromNightly = cfg.excludeFromUpdater;
+        };
+      }
+    ]
+  );
 }

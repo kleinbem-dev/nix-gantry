@@ -430,7 +430,8 @@ list of string
 
 
 Maximum time (seconds) to wait for a container to reach active state
-and pass any configured healthcheck after restart\.
+and pass any configured healthcheck after restart\. A healthcheck
+still running at the end is killed and counts as failed\.
 
 
 
@@ -455,8 +456,9 @@ positive integer, meaning >0
 
 
 Optional custom healthcheck shell command per container name to verify service health\.
-Executed on the host, with systemd, nix, coreutils and curl on PATH;
-must exit 0 when healthy\.
+Executed on the host with ` bash -c `, with systemd, nix, coreutils and curl on PATH
+and the container name in ` $CONTAINER `; must exit 0 when healthy\. Retried until
+` healthcheckTimeoutSec ` runs out\.
 Example: { “caddy” = “curl -fsS http://10\.85\.46\.107:80/health”; }
 
 
