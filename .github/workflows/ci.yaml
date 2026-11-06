@@ -44,3 +44,33 @@ jobs:
             --substituter https://cache.nixos.org > /tmp/cached.json
           cat /tmp/cached.json
           jq -e '.["x86_64-linux"] == {}' /tmp/cached.json
+
+  # A merge reaches no host until nix-config's flake.lock moves (nightly at
+  # 03:00 UTC otherwise), so once main is green ask its Maintain Flake to bump
+  # this input. nix-config lives under kleinbem, not this org.
+  dispatch-lock-bump:
+    needs: check
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Mint GitHub App token for nix-config
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: kleinbem
+          repositories: nix-config
+          permission-contents: write # repository_dispatch
+      - name: Ask Maintain Flake to bump this input
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh api repos/kleinbem/nix-config/dispatches \
+            -f event_type=lock-bump \
+            -f "client_payload[inputs]=nix-gantry" \
+            -f "client_payload[sha]=$SHA"
+          echo "requested nix-config lock bump of nix-gantry at $SHA"
