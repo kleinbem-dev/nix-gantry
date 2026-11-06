@@ -7,8 +7,10 @@
 #                   and the guest still gets cgroup controllers (pids for podman).
 #   bad-manifest    VM: an unfetchable manifest fails staging, the
 #                   container stays stopped and the nightly unit fails.
-#   podman-nesting  eval only (VM tests have no network for image pulls):
-#                   usesPodman wires the storage mount, CAP_BPF, /dev/fuse.
+#   podman-run      VM: podman inside a usesPodman container, with journal
+#                   forwarding on, loads a Nix-built image and runs it.
+#   podman-nesting  eval only: usesPodman wires the storage mount, CAP_BPF,
+#                   /dev/fuse.
 #   egress-replies  eval only: egress replies are accepted before the LAN drop.
 #   tls-sidecar     eval + caddy adapt: upstream listeners bind loopback and
 #                   tls.airlock ends the output and forward chains in a reject.
@@ -265,6 +267,83 @@ in
       host.succeed("grep -q -- '--forward-journal-max-use=64M' /etc/nixos-containers/demo.conf")
     '';
   };
+
+  # No network in VM tests, so the image is built here and loaded, not pulled.
+  podman-run =
+    let
+      probeImage = pkgs.dockerTools.buildImage {
+        name = "gantry-probe";
+        tag = "latest";
+        copyToRoot = [ pkgs.busybox ];
+        config.Cmd = [
+          "/bin/echo"
+          "gantry-podman-probe"
+        ];
+      };
+    in
+    pkgs.testers.runNixOSTest {
+      name = "nix-gantry-podman-run";
+      nodes.host = {
+        imports = [
+          self.nixosModules.host
+          self.nixosModules.updater
+          shimModule
+          (
+            { config, ... }:
+            self.lib.mkContainer {
+              inherit config;
+              name = "demo-podman";
+              cfg = {
+                ip = "10.233.1.3/24";
+                hostBridge = "cbr0";
+                hostDataDir = "/var/lib/demo-podman";
+              };
+              usesPodman = true;
+              innerConfig = {
+                system.stateVersion = "25.11";
+                systemd.services.podman-probe = {
+                  wantedBy = [ "multi-user.target" ];
+                  serviceConfig.Type = "oneshot";
+                  serviceConfig.RemainAfterExit = true;
+                  path = [ "/run/current-system/sw" ];
+                  script = ''
+                    podman load -i ${probeImage}
+                    podman run --rm --network=none localhost/gantry-probe:latest
+                  '';
+                };
+              };
+            }
+          )
+        ];
+        my.container-host = {
+          enable = true;
+          subnet = "10.233.1.0/24";
+          hostAddress = "10.233.1.1";
+          # Embedded in the host's closure, so no manifest is ever fetched.
+          manifestUrl = "file:///nonexistent";
+          excludeFromStandalone = [ "demo-podman" ];
+          journal.forward = true;
+        };
+        virtualisation.memorySize = 2048;
+        virtualisation.diskSize = 4096;
+        networking.firewall.enable = false;
+        system.stateVersion = "25.11";
+      };
+      testScript = ''
+        start_all()
+        host.wait_for_unit("container@demo-podman.service", timeout=300)
+        host.wait_until_succeeds(
+            "systemctl -M demo-podman is-active podman-probe.service", timeout=120
+        )
+        # The container's own output, from crun inside the nspawn container.
+        # Forwarding is asynchronous, so the line can trail the unit state.
+        host.wait_until_succeeds(
+            "journalctl -D /var/log/containers/demo-podman --no-pager -o cat"
+            " | grep -qx gantry-podman-probe",
+            timeout=60,
+        )
+      '';
+    };
 
   bad-manifest = pkgs.testers.runNixOSTest {
     name = "nix-gantry-bad-manifest";
