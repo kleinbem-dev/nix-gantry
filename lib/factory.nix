@@ -50,6 +50,7 @@ let
   tlsCfg = if hasTls then cfg.tls else { };
   serverPort = if hasTls then tlsCfg.serverPort else 0;
   upstreams = if hasTls && tlsCfg ? upstreams then tlsCfg.upstreams else [ ];
+  allowedClients = tlsCfg.allowedClients or [ ];
 
   pkiDir = "/nix/persist/pki/internal";
 
@@ -79,7 +80,13 @@ let
   upstreamPorts = map (u: u.port) upstreams;
 
   # Inbound: :443 terminates mTLS with this container's cert, requires a client
-  # cert from the internal CA, then proxies to the local service.
+  # cert from the internal CA, then proxies to the local service. With
+  # allowedClients, only those names get through: each fleet cert's first DNS
+  # SAN is its container's name, and matching the name survives a renewal.
+  allowedClientsMatcher = lib.optionalString (allowedClients != [ ]) ''
+    @unlisted not expression `{http.request.tls.client.san.dns_names.0} in ${builtins.toJSON allowedClients}`
+    respond @unlisted 403
+  '';
   inboundBlock =
     if serverPort > 0 then
       ''
@@ -92,6 +99,7 @@ let
               }
             }
           }
+          ${allowedClientsMatcher}
           reverse_proxy localhost:${toString serverPort} {
             header_up Host {upstream_hostport}
           }
@@ -339,6 +347,10 @@ in
                   assertion =
                     serverPort == 0 || !(builtins.elem 443 upstreamPorts || builtins.elem serverPort upstreamPorts);
                   message = "${name}: a tls.upstreams port collides with the inbound :443 listener or serverPort; set upstreams.*.port to a free local port.";
+                }
+                {
+                  assertion = allowedClients == [ ] || serverPort > 0;
+                  message = "${name}: tls.allowedClients needs an inbound listener (tls.serverPort > 0).";
                 }
               ];
               networking.firewall.allowedTCPPorts = lib.mkIf (serverPort > 0) [ 443 ];

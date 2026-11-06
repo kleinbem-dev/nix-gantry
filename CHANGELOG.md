@@ -5,6 +5,12 @@ See [README's Versioning section](README.md#versioning) for what
 
 ## Unreleased
 
+**Added:**
+- `tls.allowedClients`: names of the containers a TLS listener accepts. Others
+  with a valid internal-CA certificate get a 403. The name is the client
+  certificate's first DNS SAN, so a renewed certificate keeps working. Empty
+  (the default) accepts any certificate from the CA, as before.
+
 **Changed:**
 - TLS upstreams present the container's own certificate instead of the shared
   `client.crt`, so a listener sees which container calls it. Listeners still
