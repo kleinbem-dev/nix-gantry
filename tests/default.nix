@@ -17,7 +17,8 @@
 #   tls-sidecar     eval + caddy adapt: upstream listeners bind loopback and
 #                   tls.airlock ends the output and forward chains in a reject.
 #   tls-mtls        VM: one container calls another over mTLS with its own
-#                   cert; the listener refuses no cert and a foreign CA's.
+#                   cert; the listener refuses no cert and a foreign CA's,
+#                   and answers 403 to a name not in tls.allowedClients.
 {
   pkgs,
   self,
@@ -121,6 +122,7 @@ let
                   tls = {
                     enable = true;
                     serverPort = 8080;
+                    allowedClients = [ "web" ];
                     upstreams = [
                       {
                         name = "api";
@@ -162,6 +164,7 @@ let
     }
     sign api $out/ca.crt $out/ca.key api
     sign caller $out/ca.crt $out/ca.key caller
+    sign other $out/ca.crt $out/ca.key other
     sign internal-client foreign.crt foreign.key client
     chmod 644 $out/certs/*
   '';
@@ -612,6 +615,7 @@ in
             tls = {
               enable = true;
               serverPort = 8080;
+              allowedClients = [ "caller" ];
             };
           }
           {
@@ -677,8 +681,18 @@ in
       )
 
       # A container's own cert (no EKU) passes as a client cert, a foreign CA's doesn't.
-      host.fail(api)
-      host.fail(f"{api} --cert {pki}/certs/client.crt --key {pki}/certs/client.key")
+      def refused(cmd, alert):
+          out = host.fail(f"{cmd} 2>&1")
+          assert alert in out, f"expected '{alert}', got: {out}"
+
+      refused(api, "certificate required")
+      refused(f"{api} --cert {pki}/certs/client.crt --key {pki}/certs/client.key", "unknown ca")
+
+      # A cert from the right CA whose name isn't in allowedClients gets a 403.
+      code = host.succeed(
+          f"{api} -o /dev/null -w '%{{http_code}}' --cert {pki}/certs/other.crt --key {pki}/certs/other.key"
+      )
+      assert code == "403", f"unlisted client got {code}"
 
       # The caller's upstream presents its own cert, so the shared client pair isn't needed.
       host.wait_until_succeeds(
