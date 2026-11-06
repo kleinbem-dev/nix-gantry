@@ -332,9 +332,11 @@ in
             "systemctl -M demo-podman is-active podman-probe.service", timeout=120
         )
         # The container's own output, from crun inside the nspawn container.
-        host.succeed(
+        # Forwarding is asynchronous, so the line can trail the unit state.
+        host.wait_until_succeeds(
             "journalctl -D /var/log/containers/demo-podman --no-pager -o cat"
-            " | grep -qx gantry-podman-probe"
+            " | grep -qx gantry-podman-probe",
+            timeout=60,
         )
       '';
     };
