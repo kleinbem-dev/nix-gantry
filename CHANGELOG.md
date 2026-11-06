@@ -5,6 +5,12 @@ See [README's Versioning section](README.md#versioning) for what
 
 ## Unreleased
 
+**Changed:**
+- TLS upstreams present the container's own certificate instead of the shared
+  `client.crt`, so a listener sees which container calls it. Listeners still
+  accept any certificate from the internal CA. `client.crt`/`.key` stay
+  mounted for guests built before this change and go away in a later release.
+
 **Fixed:**
 - A healthcheck command that hangs no longer blocks the rollback. It ran
   without a limit, so systemd killed the activation at the unit's start

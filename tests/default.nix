@@ -16,6 +16,8 @@
 #   egress-replies  eval only: egress replies are accepted before the LAN drop.
 #   tls-sidecar     eval + caddy adapt: upstream listeners bind loopback and
 #                   tls.airlock ends the output and forward chains in a reject.
+#   tls-mtls        VM: one container calls another over mTLS with its own
+#                   cert; the listener refuses no cert and a foreign CA's.
 {
   pkgs,
   self,
@@ -143,6 +145,42 @@ let
     };
   tlsInner = (mkTlsEval { }).config.containers.demo-tls.config;
   tlsInnerNoV6 = (mkTlsEval { networking.enableIPv6 = false; }).config.containers.demo-tls.config;
+
+  # Certificates shaped like nix-config's pki.nix: CN and SAN = the name, no EKU.
+  # client.crt comes from another CA, so a sidecar presenting it is refused.
+  testPki = pkgs.runCommand "nix-gantry-test-pki" { nativeBuildInputs = [ pkgs.openssl ]; } ''
+    mkdir -p $out/certs
+    openssl req -new -x509 -nodes -days 3650 -subj "/CN=Test CA" \
+      -keyout $out/ca.key -out $out/ca.crt
+    openssl req -new -x509 -nodes -days 3650 -subj "/CN=Foreign CA" \
+      -keyout foreign.key -out foreign.crt
+    sign() { # name, CA cert, CA key, output basename
+      openssl req -new -nodes -subj "/CN=$1/O=kleinbem" \
+        -addext "subjectAltName=DNS:$1" -keyout $out/certs/$4.key -out $1.csr
+      openssl x509 -req -in $1.csr -CA $2 -CAkey $3 -CAcreateserial -days 3650 \
+        -extfile <(echo "subjectAltName=DNS:$1") -out $out/certs/$4.crt
+    }
+    sign api $out/ca.crt $out/ca.key api
+    sign caller $out/ca.crt $out/ca.key caller
+    sign internal-client foreign.crt foreign.key client
+    chmod 644 $out/certs/*
+  '';
+
+  mkTlsContainer =
+    name: cfg: innerConfig:
+    { config, ... }:
+    self.lib.mkContainer {
+      inherit config name;
+      cfg = {
+        hostBridge = "cbr0";
+        autoStart = true;
+      }
+      // cfg;
+      innerConfig = {
+        system.stateVersion = "25.11";
+      }
+      // innerConfig;
+    };
 
   manifestFile = pkgs.writeText "manifest.json" (
     builtins.toJSON {
@@ -560,4 +598,93 @@ in
           || { echo "upstream listener not loopback-only"; jq '[.apps.http.servers[].listen]' adapted.json; exit 1; }
         touch $out
       '';
+
+  tls-mtls = pkgs.testers.runNixOSTest {
+    name = "nix-gantry-tls-mtls";
+    nodes.host = {
+      imports = [
+        self.nixosModules.host
+        self.nixosModules.updater
+        shimModule
+        (mkTlsContainer "api"
+          {
+            ip = "10.233.5.3/24";
+            tls = {
+              enable = true;
+              serverPort = 8080;
+            };
+          }
+          {
+            systemd.services.api = {
+              wantedBy = [ "multi-user.target" ];
+              script = ''
+                mkdir -p /srv && echo api-says-hi > /srv/index.html
+                exec ${pkgs.python3}/bin/python3 -m http.server 8080 --bind 127.0.0.1 --directory /srv
+              '';
+            };
+          }
+        )
+        (mkTlsContainer "caller" {
+          ip = "10.233.5.2/24";
+          tls = {
+            enable = true;
+            serverPort = 0;
+            upstreams = [
+              {
+                name = "api";
+                target = "10.233.5.3";
+                port = 4000;
+              }
+            ];
+          };
+        } { environment.systemPackages = [ pkgs.curl ]; })
+      ];
+
+      my.container-host = {
+        enable = true;
+        subnet = "10.233.5.0/24";
+        hostAddress = "10.233.5.1";
+        manifestUrl = "file:///nonexistent";
+        # Embedded, so .path is a real closure and they start at boot.
+        excludeFromStandalone = [
+          "api"
+          "caller"
+        ];
+      };
+      # The module leaves the bridge address to the host config.
+      networking.interfaces.cbr0.ipv4.addresses = [
+        {
+          address = "10.233.5.1";
+          prefixLength = 24;
+        }
+      ];
+      systemd.tmpfiles.rules = [ "L+ /nix/persist/pki/internal - - - - ${testPki}" ];
+      environment.systemPackages = [ pkgs.curl ];
+      networking.firewall.enable = false;
+      system.stateVersion = "25.11";
+    };
+    testScript = ''
+      start_all()
+      host.wait_for_unit("container@api.service")
+      host.wait_for_unit("container@caller.service")
+      for c in ["api", "caller"]:
+          host.wait_until_succeeds(f"nixos-container run {c} -- systemctl is-active mtls-sidecar", timeout=60)
+
+      pki = "${testPki}"
+      api = f"curl -sS --max-time 5 --cacert {pki}/ca.crt --resolve api:443:10.233.5.3 https://api/"
+      host.wait_until_succeeds(
+          f"{api} --cert {pki}/certs/caller.crt --key {pki}/certs/caller.key | grep -q api-says-hi", timeout=60
+      )
+
+      # A container's own cert (no EKU) passes as a client cert, a foreign CA's doesn't.
+      host.fail(api)
+      host.fail(f"{api} --cert {pki}/certs/client.crt --key {pki}/certs/client.key")
+
+      # The caller's upstream presents its own cert, so the shared client pair isn't needed.
+      host.wait_until_succeeds(
+          "nixos-container run caller -- curl -sS --max-time 5 http://127.0.0.1:4000/ | grep -q api-says-hi",
+          timeout=60,
+      )
+    '';
+  };
 }

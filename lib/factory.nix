@@ -55,8 +55,9 @@ let
 
   # Outbound: localhost:<port> -> <target>:443 over mTLS. The server cert is
   # checked against the internal CA by its SAN (the upstream's name, hence
-  # tls_server_name); this container presents the shared client cert, so the
-  # listener stays on loopback. [::1] only with IPv6: Caddy aborts on a failed bind.
+  # tls_server_name). This container presents its own cert, so a listener can
+  # tell callers apart; anyone reaching the port gets that identity, so it stays
+  # on loopback. [::1] only with IPv6: Caddy aborts on a failed bind.
   mkUpstreamBlock = ipv6: upstream: ''
     :${toString upstream.port} {
       bind 127.0.0.1${lib.optionalString ipv6 " [::1]"}
@@ -65,7 +66,7 @@ let
         transport http {
           tls
           tls_server_name ${upstream.name}
-          tls_client_auth /etc/pki/internal/client.crt /etc/pki/internal/client.key
+          tls_client_auth /etc/pki/internal/${name}.crt /etc/pki/internal/${name}.key
           tls_trust_pool file {
             pem_file /etc/pki/internal/ca.crt
           }
@@ -416,9 +417,9 @@ in
           isReadOnly = true;
         };
       })
-      # Both key pairs whenever TLS is on, not only the ones this config's
-      # sidecar uses: a standalone guest updates apart from the host, so its
-      # closure can need a pair this host generation wouldn't mount.
+      # Both key pairs whenever TLS is on: a standalone guest updates apart from
+      # the host, so its closure can need a pair this host generation wouldn't
+      # use. client.* only serves guests built before upstreams used ${name}.*.
       // (lib.optionalAttrs hasTls {
         "/etc/pki/internal/ca.crt" = {
           hostPath = "${pkiDir}/ca.crt";
