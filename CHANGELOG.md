@@ -5,6 +5,11 @@ See [README's Versioning section](README.md#versioning) for what
 
 ## Unreleased
 
+**Breaking:**
+- TLS containers no longer get the shared `client.crt`/`client.key` mounted.
+  Upstreams present the container's own certificate since v0.3.0; a guest
+  built from v0.2.0 or older needs a host on v0.3.0 until it is updated.
+
 ## v0.3.0
 
 **Breaking:**
