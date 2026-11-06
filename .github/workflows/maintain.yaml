@@ -1,0 +1,16 @@
+name: Maintain Flake
+on:
+  workflow_dispatch:
+  schedule:
+    # 02:45 UTC, after the sub-flakes.
+    - cron: '45 2 * * *'
+
+# Nightly flake.lock PR, shared: kleinbem/actions' maintain-flake.
+permissions: {}
+
+jobs:
+  maintain:
+    uses: kleinbem/actions/.github/workflows/maintain-flake.yaml@c5fb62f7a90fc2986a153121ee650962a825929a # v1.6.0
+    secrets:
+      app-id: ${{ secrets.APP_ID }}
+      app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
