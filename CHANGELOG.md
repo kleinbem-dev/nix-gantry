@@ -5,11 +5,41 @@ See [README's Versioning section](README.md#versioning) for what
 
 ## Unreleased
 
+## v0.3.0
+
+**Breaking:**
+- The reusable `publish-manifest.yaml` workflow requires `substituters`
+  (was defaulting to `https://cache.nixos.org`, which never holds a
+  container closure) and needs `permissions: contents: write` from the
+  caller. It runs `publish-manifest` from the caller's locked `nix-gantry`
+  input (`gantry-input`, default `nix-gantry`) instead of the caller's own
+  flake, which never had the app. Bump that lock with the workflow ref:
+  `trusted-public-keys` needs a `nix-gantry` input from this release.
+- `publish-manifest` fails when a substituter can't be queried and paths are
+  still unaccounted for, instead of dropping every container from the
+  manifest.
+- `lib.oidcOptions`' `issuerUrl` has no fallback any more: pass
+  `issuerUrl` when importing it, or set the option. It used to default to
+  this fleet's `auth.kleinbem.dev`.
+
 **Added:**
 - `tls.allowedClients`: names of the containers a TLS listener accepts. Others
   with a valid internal-CA certificate get a 403. The name is the client
   certificate's first DNS SAN, so a renewed certificate keeps working. Empty
   (the default) accepts any certificate from the CA, as before.
+
+- `my.container-host.journal.maxUseFor.<name>` overrides the forwarded
+  journal's disk cap for one container, e.g. a busy reverse proxy that
+  fills the default 256M in a day.
+- Container journals reach the host. `lib.mkContainer` passes nspawn
+  `--forward-journal`, so each container's journal lands in
+  `/var/log/containers/<name>`, survives the ephemeral root's restarts and
+  is readable by the `systemd-journal` group with `journalctl -D`. Set by
+  `my.container-host.journal.forward` (on with systemd 261 or newer) and
+  capped by `my.container-host.journal.maxUse` (default `256M`).
+  `nixosModules.host-persistence` persists `/var/log/containers`. Guests
+  need systemd 256 or newer; older ones keep their journal inside the
+  container as before.
 
 **Changed:**
 - TLS upstreams present the container's own certificate instead of the shared
@@ -50,36 +80,6 @@ See [README's Versioning section](README.md#versioning) for what
   unbounded; sub-second units (`ms`, `us`) round up instead of failing
   evaluation.
 
-**Added:**
-- `my.container-host.journal.maxUseFor.<name>` overrides the forwarded
-  journal's disk cap for one container, e.g. a busy reverse proxy that
-  fills the default 256M in a day.
-- Container journals reach the host. `lib.mkContainer` passes nspawn
-  `--forward-journal`, so each container's journal lands in
-  `/var/log/containers/<name>`, survives the ephemeral root's restarts and
-  is readable by the `systemd-journal` group with `journalctl -D`. Set by
-  `my.container-host.journal.forward` (on with systemd 261 or newer) and
-  capped by `my.container-host.journal.maxUse` (default `256M`).
-  `nixosModules.host-persistence` persists `/var/log/containers`. Guests
-  need systemd 256 or newer; older ones keep their journal inside the
-  container as before.
-
-**Breaking:**
-- The reusable `publish-manifest.yaml` workflow requires `substituters`
-  (was defaulting to `https://cache.nixos.org`, which never holds a
-  container closure) and needs `permissions: contents: write` from the
-  caller. It runs `publish-manifest` from the caller's locked `nix-gantry`
-  input (`gantry-input`, default `nix-gantry`) instead of the caller's own
-  flake, which never had the app. Bump that lock with the workflow ref:
-  `trusted-public-keys` needs a `nix-gantry` input from this release.
-- `publish-manifest` fails when a substituter can't be queried and paths are
-  still unaccounted for, instead of dropping every container from the
-  manifest.
-- `lib.oidcOptions`' `issuerUrl` has no fallback any more: pass
-  `issuerUrl` when importing it, or set the option. It used to default to
-  this fleet's `auth.kleinbem.dev`.
-
-**Fixed:**
 - `nixosModules.host-persistence` only persists a `hostDataDir` that lives on
   tmpfs. One on a real disk (e.g. `/mnt/data/...`) is already persistent, and
   the bind from `/nix/persist` hid that disk's copy, so the data stayed on the
@@ -130,13 +130,15 @@ See [README's Versioning section](README.md#versioning) for what
   chain applies the same allowlist to what the container routes (rootful
   podman), plus DNAT'd inbound connections.
   `tls.whitelistDomains` is still not enforced, and says so.
-- mTLS upstream listeners bind loopback only; they present the shared client
-  certificate. `tls.upstreams.*.port` is documented as that local port.
+- mTLS upstream listeners bind loopback only. `tls.upstreams.*.port` is
+  documented as that local port.
 - Evaluation fails with a clear message when a `tls.upstreams` port is used
   twice or collides with the inbound `:443`/`serverPort`, which made Caddy
   reject its config and the sidecar restart in a loop.
 - README: with a tmpfs `/var`, `/var/lib/machines` has to be persisted by
   the host; `nixosModules.host-persistence` doesn't do it.
+
+Full diff: [v0.2.0...v0.3.0](https://github.com/kleinbem-dev/nix-gantry/compare/v0.2.0...v0.3.0)
 
 ## v0.2.0
 
