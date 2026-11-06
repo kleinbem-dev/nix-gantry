@@ -149,7 +149,7 @@ let
   tlsInnerNoV6 = (mkTlsEval { networking.enableIPv6 = false; }).config.containers.demo-tls.config;
 
   # Certificates shaped like nix-config's pki.nix: CN and SAN = the name, no EKU.
-  # client.crt comes from another CA, so a sidecar presenting it is refused.
+  # foreign.crt comes from another CA.
   testPki = pkgs.runCommand "nix-gantry-test-pki" { nativeBuildInputs = [ pkgs.openssl ]; } ''
     mkdir -p $out/certs
     openssl req -new -x509 -nodes -days 3650 -subj "/CN=Test CA" \
@@ -165,7 +165,7 @@ let
     sign api $out/ca.crt $out/ca.key api
     sign caller $out/ca.crt $out/ca.key caller
     sign other $out/ca.crt $out/ca.key other
-    sign internal-client foreign.crt foreign.key client
+    sign foreign foreign.crt foreign.key foreign
     chmod 644 $out/certs/*
   '';
 
@@ -686,7 +686,7 @@ in
           assert alert in out, f"expected '{alert}', got: {out}"
 
       refused(api, "certificate required")
-      refused(f"{api} --cert {pki}/certs/client.crt --key {pki}/certs/client.key", "unknown ca")
+      refused(f"{api} --cert {pki}/certs/foreign.crt --key {pki}/certs/foreign.key", "unknown ca")
 
       # A cert from the right CA whose name isn't in allowedClients gets a 403.
       code = host.succeed(
@@ -694,7 +694,8 @@ in
       )
       assert code == "403", f"unlisted client got {code}"
 
-      # The caller's upstream presents its own cert, so the shared client pair isn't needed.
+      # The caller's upstream presents its own cert; no container holds a shared client key.
+      host.fail("nixos-container run caller -- test -e /etc/pki/internal/client.key")
       host.wait_until_succeeds(
           "nixos-container run caller -- curl -sS --max-time 5 http://127.0.0.1:4000/ | grep -q api-says-hi",
           timeout=60,

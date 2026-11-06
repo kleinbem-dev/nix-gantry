@@ -429,9 +429,8 @@ in
           isReadOnly = true;
         };
       })
-      # Both key pairs whenever TLS is on: a standalone guest updates apart from
-      # the host, so its closure can need a pair this host generation wouldn't
-      # use. client.* only serves guests built before upstreams used ${name}.*.
+      # The container's pair whenever TLS is on, not only with a listener: a
+      # standalone guest updates apart from the host, and upstreams present it too.
       // (lib.optionalAttrs hasTls {
         "/etc/pki/internal/ca.crt" = {
           hostPath = "${pkiDir}/ca.crt";
@@ -443,14 +442,6 @@ in
         };
         "/etc/pki/internal/${name}.key" = {
           hostPath = "${pkiDir}/certs/${name}.key";
-          isReadOnly = true;
-        };
-        "/etc/pki/internal/client.crt" = {
-          hostPath = "${pkiDir}/certs/client.crt";
-          isReadOnly = true;
-        };
-        "/etc/pki/internal/client.key" = {
-          hostPath = "${pkiDir}/certs/client.key";
           isReadOnly = true;
         };
       })
