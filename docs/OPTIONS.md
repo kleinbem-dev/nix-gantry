@@ -1,5 +1,4 @@
 <!-- Generated via `nix build .#options-doc`. Do not hand-edit -- see CONTRIBUTING.md. -->
-
 ## my\.container-host\.enable
 
 
@@ -28,7 +27,7 @@ true
 ```
 
 *Declared by:*
- - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
+ - [modules/host\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/host.nix)
 
 
 
@@ -60,7 +59,7 @@ true
 ```
 
 *Declared by:*
- - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
+ - [modules/host\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/host.nix)
 
 
 
@@ -82,7 +81,7 @@ string
 ```
 
 *Declared by:*
- - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
+ - [modules/host\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/host.nix)
 
 
 
@@ -110,7 +109,7 @@ list of string
 ```
 
 *Declared by:*
- - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
+ - [modules/host\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/host.nix)
 
 
 
@@ -150,7 +149,7 @@ list of string
 ```
 
 *Declared by:*
- - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
+ - [modules/host\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/host.nix)
 
 
 
@@ -174,7 +173,7 @@ string
 ```
 
 *Declared by:*
- - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
+ - [modules/host\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/host.nix)
 
 
 
@@ -203,7 +202,7 @@ lib.versionAtLeast config.systemd.package.version "261"
 ```
 
 *Declared by:*
- - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
+ - [modules/host\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/host.nix)
 
 
 
@@ -227,7 +226,7 @@ string
 ```
 
 *Declared by:*
- - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
+ - [modules/host\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/host.nix)
 
 
 
@@ -261,7 +260,7 @@ attribute set of string
 ```
 
 *Declared by:*
- - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
+ - [modules/host\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/host.nix)
 
 
 
@@ -287,7 +286,7 @@ string
 ```
 
 *Declared by:*
- - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
+ - [modules/host\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/host.nix)
 
 
 
@@ -311,7 +310,7 @@ string
 ```
 
 *Declared by:*
- - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
+ - [modules/host\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/host.nix)
 
 
 
@@ -343,7 +342,7 @@ true
 ```
 
 *Declared by:*
- - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater.nix)
+ - [modules/updater\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/updater.nix)
 
 
 
@@ -368,7 +367,7 @@ true
 ```
 
 *Declared by:*
- - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater.nix)
+ - [modules/updater\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/updater.nix)
 
 
 
@@ -392,7 +391,7 @@ list of string
 ```
 
 *Declared by:*
- - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater.nix)
+ - [modules/updater\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/updater.nix)
 
 
 
@@ -422,7 +421,7 @@ list of string
 ```
 
 *Declared by:*
- - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater.nix)
+ - [modules/updater\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/updater.nix)
 
 
 
@@ -447,7 +446,7 @@ positive integer, meaning >0
 ```
 
 *Declared by:*
- - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater.nix)
+ - [modules/updater\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/updater.nix)
 
 
 
@@ -474,7 +473,7 @@ attribute set of string
 ```
 
 *Declared by:*
- - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater.nix)
+ - [modules/updater\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/updater.nix)
 
 
 
@@ -496,6 +495,6 @@ path from the binary cache\.
 string
 
 *Declared by:*
- - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/updater.nix)
+ - [modules/updater\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/updater.nix)
 
 

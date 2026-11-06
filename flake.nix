@@ -57,6 +57,22 @@
             }).options;
           # Render only this flake's options, not the whole NixOS tree.
           optionsDoc = pkgs.nixosOptionsDoc {
+            # Link declarations to the repo, not to this build's /nix/store copy.
+            transformOptions =
+              opt:
+              opt
+              // {
+                declarations = map (
+                  decl:
+                  let
+                    file = lib.removePrefix "${self}/" (toString decl);
+                  in
+                  {
+                    name = file;
+                    url = "https://github.com/kleinbem-dev/nix-gantry/blob/main/${file}";
+                  }
+                ) opt.declarations;
+              };
             options = {
               my = {
                 inherit (allOptions.my) container-host;
