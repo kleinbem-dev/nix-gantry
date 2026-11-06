@@ -168,6 +168,7 @@ let
         inherit manifestUrl;
         # Explicit, so a nixpkgs without forwarding fails here instead of skipping.
         journal.forward = true;
+        journal.maxUseFor.demo = "64M";
       };
 
       my.services.container-updater.containers = [ "demo" ];
@@ -259,6 +260,9 @@ in
       host.succeed(f"test -z \"$(cat {cg}/cgroup.procs)\"")
       host.succeed(f"grep -qw pids {cg}/payload/cgroup.controllers")
       host.succeed(f"grep -qw memory {cg}/payload/cgroup.controllers")
+
+      # journal.maxUseFor overrides the default cap for this one container.
+      host.succeed("grep -q -- '--forward-journal-max-use=64M' /etc/nixos-containers/demo.conf")
     '';
   };
 

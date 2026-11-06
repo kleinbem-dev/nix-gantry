@@ -155,7 +155,7 @@ in
 
     extraFlags = lib.optionals forwardJournal [
       "--forward-journal=${journalDir}/"
-      "--forward-journal-max-use=${journalCfg.maxUse or "256M"}"
+      "--forward-journal-max-use=${journalCfg.maxUseFor.${name} or journalCfg.maxUse or "256M"}"
     ];
 
     # Conditionally allow hardware device pass-through

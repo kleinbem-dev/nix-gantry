@@ -115,6 +115,12 @@ in
         default = "256M";
         description = "Disk cap per container for the forwarded journal.";
       };
+      maxUseFor = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = { };
+        example = { caddy = "1G"; };
+        description = "Per-container overrides of `maxUse`, by container name.";
+      };
     };
 
     # Needs nixosModules.host-persistence plus the impermanence module.

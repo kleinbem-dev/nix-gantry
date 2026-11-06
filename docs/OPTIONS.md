@@ -231,6 +231,40 @@ string
 
 
 
+## my\.container-host\.journal\.maxUseFor
+
+
+
+Per-container overrides of ` maxUse `, by container name\.
+
+
+
+*Type:*
+attribute set of string
+
+
+
+*Default:*
+
+```nix
+{ }
+```
+
+
+
+*Example:*
+
+```nix
+{
+  caddy = "1G";
+}
+```
+
+*Declared by:*
+ - [/nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host\.nix](file:///nix/store/dbi1fngqpb8866lka6jx41s3jz7iwv6b-source/modules/host.nix)
+
+
+
 ## my\.container-host\.manifestUrl
 
 

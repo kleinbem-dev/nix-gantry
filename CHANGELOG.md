@@ -30,6 +30,9 @@ See [README's Versioning section](README.md#versioning) for what
   evaluation.
 
 **Added:**
+- `my.container-host.journal.maxUseFor.<name>` overrides the forwarded
+  journal's disk cap for one container, e.g. a busy reverse proxy that
+  fills the default 256M in a day.
 - Container journals reach the host. `lib.mkContainer` passes nspawn
   `--forward-journal`, so each container's journal lands in
   `/var/log/containers/<name>`, survives the ephemeral root's restarts and
