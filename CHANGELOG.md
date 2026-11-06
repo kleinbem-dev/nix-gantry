@@ -130,8 +130,8 @@ See [README's Versioning section](README.md#versioning) for what
   chain applies the same allowlist to what the container routes (rootful
   podman), plus DNAT'd inbound connections.
   `tls.whitelistDomains` is still not enforced, and says so.
-- mTLS upstream listeners bind loopback only; they present the shared client
-  certificate. `tls.upstreams.*.port` is documented as that local port.
+- mTLS upstream listeners bind loopback only. `tls.upstreams.*.port` is
+  documented as that local port.
 - Evaluation fails with a clear message when a `tls.upstreams` port is used
   twice or collides with the inbound `:443`/`serverPort`, which made Caddy
   reject its config and the sidecar restart in a loop.
