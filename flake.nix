@@ -82,7 +82,7 @@
           };
         in
         {
-          formatter = pkgs.nixfmt-rfc-style;
+          formatter = pkgs.nixfmt;
 
           packages.options-doc = optionsDoc.optionsCommonMark;
 
@@ -92,7 +92,7 @@
               pkgs.runCommandLocal "nix-gantry-lint"
                 {
                   nativeBuildInputs = [
-                    pkgs.nixfmt-rfc-style
+                    pkgs.nixfmt
                     pkgs.statix
                     pkgs.deadnix
                     pkgs.shellcheck
@@ -139,7 +139,7 @@
               echo "nix-gantry devshell"
             '';
             buildInputs = with pkgs; [
-              nixfmt-rfc-style
+              nixfmt
               statix
               deadnix
               shellcheck

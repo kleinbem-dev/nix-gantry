@@ -6,6 +6,15 @@ See [README's Versioning section](README.md#versioning) for what
 ## Unreleased
 
 **Fixed:**
+- A healthcheck command that hangs no longer blocks the rollback. It ran
+  without a limit, so systemd killed the activation at the unit's start
+  timeout and the bad closure stayed selected. Each run is now limited to
+  what is left of `healthcheckTimeoutSec` and counts as failed when killed.
+  Healthchecks run with `bash -c` and get the container name in `$CONTAINER`.
+- `nixosModules.host` no longer fails with "The option `my.network' does not
+  exist" in a config that doesn't declare it, which included the quickstart
+  in `examples/`. It still mirrors `subnet` and `hostAddress` there when the
+  option exists.
 - Podman inside a container works again with journal forwarding on.
   nspawn forks `systemd-journal-remote` before it moves itself into
   `supervisor/`, so the receiver stayed in the unit's top cgroup and nspawn

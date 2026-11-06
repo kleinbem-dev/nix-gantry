@@ -166,9 +166,13 @@ let
         ${lib.concatStringsSep "\n" (
           lib.mapAttrsToList (name: cmd: ''
             "${name}")
-              if ! ( ${cmd} ); then
+              # Bounded by what is left of the budget: a hanging check would
+              # otherwise run into the unit's start timeout, before the rollback.
+              remaining=$((deadline - SECONDS))
+              [ "$remaining" -ge 1 ] || remaining=1
+              if ! ${pkgs.coreutils}/bin/timeout --kill-after=5 "$remaining" \
+                ${pkgs.runtimeShell} -uo pipefail -c ${lib.escapeShellArg cmd}; then
                 sleep "$interval"
-                elapsed=$((elapsed + interval))
                 continue
               fi
               ;;
@@ -213,6 +217,7 @@ let
       echo "Restarting container $CONTAINER to apply staged update..."
       # Not machinectl restart: it returns mid-reboot, while container@ still
       # looks active, so the check below passed before the new closure ran.
+      # no-link: documented, it only signals the guest's init.
       systemctl restart "container@$CONTAINER" || started=0
     else
       echo "Container $CONTAINER is not currently running. Starting it..."
@@ -221,7 +226,6 @@ let
 
     echo "Waiting for container@$CONTAINER to reach active status..."
     timeout=${toString cfg.healthcheckTimeoutSec}
-    elapsed=0
     interval=2
     healthy=0
     # A failed start skips the wait and goes straight to the rollback below.
@@ -232,7 +236,11 @@ let
       sleep 2 # let the transition settle
     fi
 
-    while [ "$elapsed" -lt "$timeout" ]; do
+    # Wall clock, so the time a healthcheck takes counts too.
+    export CONTAINER
+    start=$SECONDS
+    deadline=$((start + timeout))
+    while [ "$SECONDS" -lt "$deadline" ]; do
       if systemctl is-active --quiet "container@$CONTAINER"; then
         ${healthcheckCases}
         healthy=1
@@ -245,8 +253,8 @@ let
       fi
 
       sleep "$interval"
-      elapsed=$((elapsed + interval))
     done
+    elapsed=$((SECONDS - start))
 
     if [ "$healthy" -eq 1 ]; then
       rm -f "/run/container-updater/changed-$CONTAINER"
@@ -332,7 +340,8 @@ in
       default = 60;
       description = ''
         Maximum time (seconds) to wait for a container to reach active state
-        and pass any configured healthcheck after restart.
+        and pass any configured healthcheck after restart. A healthcheck
+        still running at the end is killed and counts as failed.
       '';
     };
     healthchecks = lib.mkOption {
@@ -340,8 +349,9 @@ in
       default = { };
       description = ''
         Optional custom healthcheck shell command per container name to verify service health.
-        Executed on the host, with systemd, nix, coreutils and curl on PATH;
-        must exit 0 when healthy.
+        Executed on the host with `bash -c`, with systemd, nix, coreutils and curl on PATH
+        and the container name in `$CONTAINER`; must exit 0 when healthy. Retried until
+        `healthcheckTimeoutSec` runs out.
         Example: { "caddy" = "curl -fsS http://10.85.46.107:80/health"; }
       '';
     };

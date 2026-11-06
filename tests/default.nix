@@ -23,10 +23,10 @@
   lib,
 }:
 let
-  inherit (pkgs) system;
+  inherit (pkgs.stdenv.hostPlatform) system;
 
-  # nixosModules.host writes my.network.subnet/hostAddress for other modules to
-  # read, but this flake doesn't declare them.
+  # nixosModules.host mirrors subnet/hostAddress into my.network where a config
+  # declares it, as here. quickstart-eval covers a config without it.
   shimModule =
     { lib, ... }:
     {
@@ -373,7 +373,10 @@ in
       imports = [
         (mkHostNode {
           manifestUrl = "file://${manifestFile}";
-          healthchecks.demo = "systemctl -M demo is-active --quiet health-marker.service";
+          healthchecks.demo = ''
+            if [ -e /run/hang-healthcheck ]; then sleep infinity & echo $! > /run/hang-pid; wait; fi
+            systemctl -M "$CONTAINER" is-active --quiet health-marker.service
+          '';
         })
       ];
       system.extraDependencies = [ unhealthyClosure ];
@@ -398,6 +401,19 @@ in
       host.wait_until_succeeds("systemctl -M demo is-active health-marker.service", timeout=60)
       host.succeed("journalctl -u update-container-activate@demo.service -o cat --no-pager | grep -q 'Healthcheck FAILED'")
       host.succeed("journalctl -u update-container-activate@demo.service -o cat --no-pager | grep -q 'Rollback completed for demo'")
+
+      # A healthcheck that hangs is killed when the budget runs out and the
+      # rollback still runs: the unit fails by exit code, not by its timeout.
+      host.succeed("systemctl reset-failed container@demo.service")
+      host.succeed("touch /run/hang-healthcheck")
+      host.succeed(f"nix-env --profile {profile} --set ${unhealthyClosure}")
+      host.fail("systemctl start --wait update-container-activate@demo.service")
+      host.succeed("test $(systemctl show -P Result update-container-activate@demo.service) = exit-code")
+      host.succeed(f"test $(readlink -f {profile}) = ${demoClosure}")
+      # The check did hang (a failed start would skip it), and its child is gone.
+      host.succeed("test -s /run/hang-pid")
+      host.fail("kill -0 $(cat /run/hang-pid)")
+      host.fail("test -e /run/container-updater/changed-demo")
     '';
   };
 
@@ -423,6 +439,21 @@ in
       host.fail("systemctl start update-containers.service")
     '';
   };
+
+  # Pure eval-level check: the quickstart host evaluates as shipped, without
+  # declaring my.network. CI otherwise only builds its factory half. The VM
+  # variant, since that is what the README's `nixos-rebuild build-vm` builds.
+  quickstart-eval =
+    let
+      example = (import ../examples/flake.nix).outputs {
+        inherit (inputs) nixpkgs;
+        nix-gantry = self;
+      };
+      inherit (example.nixosConfigurations.quickstart.config.system.build) vm;
+    in
+    pkgs.runCommand "nix-gantry-quickstart-eval-check" { } ''
+      echo ${builtins.unsafeDiscardStringContext vm.drvPath} > $out
+    '';
 
   podman-nesting =
     let

@@ -116,7 +116,7 @@ for name in $(echo "$CONTAINER_NAMES" | jq -r '.[]'); do
 
   echo "Building ${name}..." >&2
   if command -v nix-fast-build >/dev/null 2>&1; then
-    nix-fast-build --flake "${path_attr}" "${SUBSTITUTER_ARGS[@]}" || {
+    nix-fast-build --flake "${path_attr}" "${SUBSTITUTER_ARGS[@]}" >&2 || {
       echo "  ${name}: build failed, skipping" >&2
       continue
     }
