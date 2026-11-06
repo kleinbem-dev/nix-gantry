@@ -536,7 +536,7 @@ in
         # it --forward-journal's journal-remote stays in the unit's top cgroup,
         # nspawn can't delegate controllers to payload/, and podman fails
         # ("controller pids is not available").
-        # no-link: not reported to nixpkgs yet.
+        # upstream: NixOS/nixpkgs#583993
         DelegateSubgroup = "supervisor";
       }
       (mkIf
