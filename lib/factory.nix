@@ -416,15 +416,14 @@ in
           isReadOnly = true;
         };
       })
-      # Keys only where the sidecar uses them: the server pair for the inbound
-      # listener, the shared client pair for upstreams.
+      # Both key pairs whenever TLS is on, not only the ones this config's
+      # sidecar uses: a standalone guest updates apart from the host, so its
+      # closure can need a pair this host generation wouldn't mount.
       // (lib.optionalAttrs hasTls {
         "/etc/pki/internal/ca.crt" = {
           hostPath = "${pkiDir}/ca.crt";
           isReadOnly = true;
         };
-      })
-      // (lib.optionalAttrs (hasTls && serverPort > 0) {
         "/etc/pki/internal/${name}.crt" = {
           hostPath = "${pkiDir}/certs/${name}.crt";
           isReadOnly = true;
@@ -433,8 +432,6 @@ in
           hostPath = "${pkiDir}/certs/${name}.key";
           isReadOnly = true;
         };
-      })
-      // (lib.optionalAttrs (hasTls && upstreams != [ ]) {
         "/etc/pki/internal/client.crt" = {
           hostPath = "${pkiDir}/certs/client.crt";
           isReadOnly = true;

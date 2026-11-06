@@ -374,7 +374,7 @@ in
         (mkHostNode {
           manifestUrl = "file://${manifestFile}";
           healthchecks.demo = ''
-            if [ -e /run/hang-healthcheck ]; then sleep infinity; fi
+            if [ -e /run/hang-healthcheck ]; then sleep infinity & echo $! > /run/hang-pid; wait; fi
             systemctl -M "$CONTAINER" is-active --quiet health-marker.service
           '';
         })
@@ -410,7 +410,9 @@ in
       host.fail("systemctl start --wait update-container-activate@demo.service")
       host.succeed("test $(systemctl show -P Result update-container-activate@demo.service) = exit-code")
       host.succeed(f"test $(readlink -f {profile}) = ${demoClosure}")
-      host.fail("pgrep -fx 'sleep infinity'")
+      # The check did hang (a failed start would skip it), and its child is gone.
+      host.succeed("test -s /run/hang-pid")
+      host.fail("kill -0 $(cat /run/hang-pid)")
       host.fail("test -e /run/container-updater/changed-demo")
     '';
   };
@@ -530,35 +532,6 @@ in
       textNoV6 = tlsInnerNoV6.environment.etc."caddy-sidecar/Caddyfile".text;
       caddyfile = pkgs.writeText "Caddyfile" text;
       nft = tlsInner.networking.nftables.tables.zt-factory.content;
-      mountsFor =
-        tls:
-        (self.lib.mkContainer {
-          config = {
-            my.services.container-updater.containers = [ ];
-          };
-          name = "demo-tls";
-          cfg = {
-            ip = "10.233.4.2/24";
-            hostBridge = "cbr0";
-            tls = {
-              enable = true;
-            }
-            // tls;
-          };
-        }).containers.demo-tls.bindMounts;
-      inboundOnly = mountsFor { serverPort = 8080; };
-      upstreamOnly = mountsFor {
-        serverPort = 0;
-        upstreams = [
-          {
-            name = "api";
-            target = "10.233.4.3";
-            port = 4000;
-          }
-        ];
-      };
-      serverKey = "/etc/pki/internal/demo-tls.key";
-      clientKey = "/etc/pki/internal/client.key";
     in
     pkgs.runCommand "nix-gantry-tls-sidecar-check"
       {
@@ -573,17 +546,6 @@ in
             ""
           else
             throw "tls.airlock: output and forward chains must both reject"
-        }
-        ${
-          if
-            inboundOnly ? ${serverKey}
-            && !(inboundOnly ? ${clientKey})
-            && upstreamOnly ? ${clientKey}
-            && !(upstreamOnly ? ${serverKey})
-          then
-            ""
-          else
-            throw "tls: a container must get only the keys its sidecar uses"
         }
         ${
           if lib.hasInfix "[::1]" text && !(lib.hasInfix "[::1]" textNoV6) then

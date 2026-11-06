@@ -53,10 +53,6 @@ See [README's Versioning section](README.md#versioning) for what
   container as before.
 
 **Breaking:**
-- A TLS container gets only the keys its sidecar uses: `<name>.crt`/`.key`
-  with `tls.serverPort` set, `client.crt`/`.key` with `tls.upstreams`. Both
-  pairs used to be mounted into every container with `tls.enable`; a guest
-  service that read one without those options has to set them.
 - The reusable `publish-manifest.yaml` workflow requires `substituters`
   (was defaulting to `https://cache.nixos.org`, which never holds a
   container closure) and needs `permissions: contents: write` from the
