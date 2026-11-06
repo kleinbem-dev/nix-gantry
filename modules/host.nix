@@ -118,7 +118,9 @@ in
       maxUseFor = lib.mkOption {
         type = lib.types.attrsOf lib.types.str;
         default = { };
-        example = { caddy = "1G"; };
+        example = {
+          caddy = "1G";
+        };
         description = "Per-container overrides of `maxUse`, by container name.";
       };
     };
