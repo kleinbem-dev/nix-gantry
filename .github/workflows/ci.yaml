@@ -1,0 +1,76 @@
+name: check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: kleinbem/actions/nix-setup@7ec628296d5194e6e10031706387b992a10a1638 # v1.0.1
+        with:
+          nix-path: nixpkgs=channel:nixos-unstable
+          # Read-only Attic over NetBird; skipped when the secrets are
+          # absent (fork PRs, Dependabot).
+          netbird-setup-key: ${{ secrets.NETBIRD_SETUP_KEY_EPHEMERAL }}
+          attic-token: ${{ secrets.ATTIC_PULL_TOKEN }}
+      # checks.lint already runs nixfmt --check, so no separate `nix fmt` step.
+      - run: nix flake check -L
+      # publish-manifest runs nix itself, which a sandboxed check can't
+      # (no recursive nix), so it's tested here against examples/.
+      - name: Test apps.publish-manifest against the example flake
+        run: |
+          cd examples
+          nix run ..#publish-manifest -- \
+            --flake-ref . --config quickstart-factory --system x86_64-linux \
+            > /tmp/fragment.json
+          cat /tmp/fragment.json
+          store_path=$(jq -er '.["x86_64-linux"]["hello"]' /tmp/fragment.json)
+          echo "Got store path: $store_path"
+          nix path-info "$store_path"
+          # hello was built here and no cache has it, so the cache check
+          # must drop it.
+          nix run ..#publish-manifest -- \
+            --flake-ref . --config quickstart-factory --system x86_64-linux \
+            --substituter https://cache.nixos.org > /tmp/cached.json
+          cat /tmp/cached.json
+          jq -e '.["x86_64-linux"] == {}' /tmp/cached.json
+
+  # A merge reaches no host until nix-config's flake.lock moves (nightly at
+  # 03:00 UTC otherwise), so once main is green ask its Maintain Flake to bump
+  # this input. nix-config lives under kleinbem, not this org.
+  dispatch-lock-bump:
+    needs: check
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Mint GitHub App token for nix-config
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: kleinbem
+          repositories: nix-config
+          permission-contents: write # repository_dispatch
+      - name: Ask Maintain Flake to bump this input
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh api repos/kleinbem/nix-config/dispatches \
+            -f event_type=lock-bump \
+            -f "client_payload[inputs]=nix-gantry" \
+            -f "client_payload[sha]=$SHA"
+          echo "requested nix-config lock bump of nix-gantry at $SHA"

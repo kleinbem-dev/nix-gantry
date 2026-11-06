@@ -1,0 +1,21 @@
+name: fleet-lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions: {}
+
+jobs:
+  fleet-lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # gitleaks scans every commit of the PR
+          persist-credentials: false
+      - uses: kleinbem/actions/nix-setup@f716d62182471a9e862ae0bd61d34201e6cea971 # v1.3.1
+      - uses: kleinbem/actions/lint@f716d62182471a9e862ae0bd61d34201e6cea971 # v1.3.1
