@@ -1,4 +1,0 @@
-# manual_inherit_from flags `attr = cfg.attr or default;`, which `inherit`
-# can't express. Fixed by https://github.com/molybdenumsoftware/statix/pull/56;
-# drop this once our statix has it.
-disabled = ["manual_inherit_from"]
