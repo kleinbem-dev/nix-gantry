@@ -156,7 +156,7 @@ in
     ephemeral = true;
     autoStart = cfg.autoStart or true;
     privateNetwork = true;
-    hostBridge = cfg.hostBridge;
+    inherit (cfg) hostBridge;
     localAddress = cfg.ip;
     privateUsers = cfg.privateUsers or "no";
     # Set the timeout here: nixos-containers assigns TimeoutStartSec from this
