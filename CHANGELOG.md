@@ -11,6 +11,8 @@ See [README's Versioning section](README.md#versioning) for what
   `dataDirOwner`/`dataDirGroup` (default 1000:100) under a guest service
   that owns it (postgres, `StateDirectory`, podman storage). Changing
   `dataDirOwner` no longer re-owns an existing dir either.
+- `host-persistence` creates a new persisted `hostDataDir` with the
+  factory's mode and owner instead of impermanence's root:root default.
 
 **Breaking:**
 - TLS containers no longer get the shared `client.crt`/`client.key` mounted.

@@ -18,6 +18,8 @@
   usesPodman ? false,
   # Subdirectories of cfg.hostDataDir created on the host before nspawn starts
   # (bind mounts don't create a missing host dir), e.g. [ "postgresql" ].
+  # Keep them one level deep: once a guest re-owns "a", host tmpfiles refuses
+  # "a/b" as an unsafe path transition.
   subDirs ? [ ],
   # Host-side env/secrets file, bind-mounted read-only at /run/secrets/<name>.env
   # (or secretsFilePath). Wiring it into the service's environmentFile stays

@@ -42,8 +42,26 @@ in
             container = config.my.containers.${name};
             dir = container.hostDataDir or null;
           in
-          lib.optional ((container.enable or false) && dir != null && onTmpfs dir) dir
+          lib.optional ((container.enable or false) && dir != null && onTmpfs dir) (persistedDir dir)
         ) (lib.attrNames config.my.containers);
+        # Impermanence creates a missing dir root:root before tmpfiles runs, and
+        # the factory's create-only rule keeps whatever exists: give it that
+        # rule's mode and owner.
+        persistedDir =
+          dir:
+          let
+            rule = "d ${lib.escapeRegex dir} :([0-7]+) :([^ ]+) :([^ ]+) - -";
+            m = lib.findFirst (x: x != null) null (map (builtins.match rule) config.systemd.tmpfiles.rules);
+          in
+          if m == null then
+            dir
+          else
+            {
+              directory = dir;
+              mode = lib.elemAt m 0;
+              user = lib.elemAt m 1;
+              group = lib.elemAt m 2;
+            };
       in
       lib.unique containerDirs ++ lib.optional cfg.journal.forward "/var/log/containers";
   };
