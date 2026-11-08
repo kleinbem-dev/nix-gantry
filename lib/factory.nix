@@ -18,6 +18,8 @@
   usesPodman ? false,
   # Subdirectories of cfg.hostDataDir created on the host before nspawn starts
   # (bind mounts don't create a missing host dir), e.g. [ "postgresql" ].
+  # Keep them one level deep: once a guest re-owns "a", host tmpfiles refuses
+  # "a/b" as an unsafe path transition.
   subDirs ? [ ],
   # Host-side env/secrets file, bind-mounted read-only at /run/secrets/<name>.env
   # (or secretsFilePath). Wiring it into the service's environmentFile stays
@@ -132,6 +134,18 @@ let
   forwardJournal =
     journalCfg.forward or (lib.versionAtLeast (config.systemd.package.version or "0") "261");
   journalDir = "/var/log/containers/${name}";
+
+  # hostDataDir defaults to 1000:100. A service without CAP_DAC_OVERRIDE (e.g.
+  # crowdsec, whose module drops all capabilities) must own the dir: pass
+  # cfg.dataDirOwner/dataDirGroup.
+  # ":" applies mode/owner only on creation (tmpfiles.d(5)): guest services
+  # (postgres, StateDirectory, podman) own these dirs once they exist, and a
+  # reset on every host activation breaks them.
+  dataDirRule =
+    path:
+    "d ${path} :0755 :${toString (cfg.dataDirOwner or 1000)} :${
+      toString (cfg.dataDirGroup or 100)
+    } - -";
 
   updaterList = config.my.services.container-updater.containers or [ ];
   isStandalone =
@@ -496,25 +510,12 @@ in
       });
   };
 
-  # hostDataDir defaults to 1000:100. A service without CAP_DAC_OVERRIDE (e.g.
-  # crowdsec, whose module drops all capabilities) must own the dir: pass
-  # cfg.dataDirOwner/dataDirGroup.
   systemd.tmpfiles.rules =
     # setgid: journal files inherit systemd-journal, readable without root.
     (lib.optional forwardJournal "d ${journalDir} 2750 root systemd-journal - -")
-    ++ (lib.optionals (cfg ? hostDataDir && cfg.hostDataDir != null) [
-      "d ${cfg.hostDataDir} 0755 ${toString (cfg.dataDirOwner or 1000)} ${
-        toString (cfg.dataDirGroup or 100)
-      } - -"
-    ])
-    ++ (map (
-      d:
-      # Must pre-exist on the host before nspawn starts — bind mounts
-      # don't auto-create missing host-side directories.
-      "d ${cfg.hostDataDir}/${d} 0755 ${toString (cfg.dataDirOwner or 1000)} ${
-        toString (cfg.dataDirGroup or 100)
-      } - -"
-    ) effectiveSubDirs);
+    ++ (lib.optional (cfg ? hostDataDir && cfg.hostDataDir != null) (dataDirRule cfg.hostDataDir))
+    # Must pre-exist on the host: bind mounts don't create missing host dirs.
+    ++ (map (d: dataDirRule "${cfg.hostDataDir}/${d}") effectiveSubDirs);
 
   # Resource limits, plus a backoff for container@'s own Restart=on-failure.
   # The StartLimit guard stops a broken container looping forever.

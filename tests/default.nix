@@ -11,6 +11,9 @@
 #                   container stays stopped and the nightly unit fails.
 #   podman-run      VM: podman inside a usesPodman container, with journal
 #                   forwarding on, loads a Nix-built image and runs it.
+#   datadir-ownership VM: hostDataDir and subDirs are created with the
+#                   configured owner, and a host tmpfiles run leaves the
+#                   owner/mode a guest service gave them alone.
 #   podman-nesting  eval only: usesPodman wires the storage mount, CAP_BPF,
 #                   /dev/fuse.
 #   egress-replies  eval only: egress replies are accepted before the LAN drop.
@@ -407,6 +410,87 @@ in
         )
       '';
     };
+
+  datadir-ownership = pkgs.testers.runNixOSTest {
+    name = "nix-gantry-datadir-ownership";
+    nodes.host = {
+      imports = [
+        self.nixosModules.host
+        self.nixosModules.updater
+        shimModule
+        (
+          { config, ... }:
+          self.lib.mkContainer {
+            inherit config;
+            name = "demo-data";
+            cfg = {
+              ip = "10.233.1.4/24";
+              hostBridge = "cbr0";
+              hostDataDir = "/var/lib/demo-data";
+            };
+            subDirs = [ "postgresql" ];
+            bindMounts = {
+              "/var/lib/demo" = {
+                hostPath = "/var/lib/demo-data";
+                isReadOnly = false;
+              };
+              "/var/lib/postgresql" = {
+                hostPath = "/var/lib/demo-data/postgresql";
+                isReadOnly = false;
+              };
+            };
+            innerConfig = {
+              system.stateVersion = "25.11";
+              # ente's shape: StateDirectory owns the top dir, postgres a subdir.
+              systemd.services.take-ownership = {
+                serviceConfig = {
+                  Type = "oneshot";
+                  RemainAfterExit = true;
+                };
+                script = ''
+                  chown 71:71 /var/lib/postgresql
+                  chmod 0700 /var/lib/postgresql
+                  chown 999:999 /var/lib/demo
+                  chmod 0750 /var/lib/demo
+                '';
+              };
+            };
+          }
+        )
+      ];
+      my.container-host = {
+        enable = true;
+        subnet = "10.233.1.0/24";
+        hostAddress = "10.233.1.1";
+        manifestUrl = "file:///nonexistent";
+        excludeFromStandalone = [ "demo-data" ];
+      };
+      networking.firewall.enable = false;
+      system.stateVersion = "25.11";
+    };
+    testScript = ''
+      start_all()
+      host.wait_for_unit("container@demo-data.service")
+
+      def stat(path):
+          return host.succeed(f"stat -c '%a %u %g' {path}").strip()
+
+      top, pg = "/var/lib/demo-data", "/var/lib/demo-data/postgresql"
+      # Fresh dirs get the configured owner and mode.
+      assert stat(top) == "755 1000 100", stat(top)
+      assert stat(pg) == "755 1000 100", stat(pg)
+
+      host.wait_until_succeeds("systemctl -M demo-data start take-ownership.service", timeout=120)
+      assert stat(top) == "750 999 999", stat(top)
+      assert stat(pg) == "700 71 71", stat(pg)
+
+      # A host activation re-runs tmpfiles; it must not take the dirs back.
+      host.succeed("systemctl restart systemd-tmpfiles-resetup.service")
+      host.succeed("systemd-tmpfiles --create")
+      assert stat(top) == "750 999 999", f"hostDataDir reset on activation: {stat(top)}"
+      assert stat(pg) == "700 71 71", f"subDir reset on activation: {stat(pg)}"
+    '';
+  };
 
   health-rollback = pkgs.testers.runNixOSTest {
     name = "nix-gantry-health-rollback";

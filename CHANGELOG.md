@@ -5,6 +5,15 @@ See [README's Versioning section](README.md#versioning) for what
 
 ## Unreleased
 
+**Fixed:**
+- `hostDataDir` and `subDirs` get their mode and owner only when tmpfiles
+  creates them. Host activations no longer reset an existing dir to
+  `dataDirOwner`/`dataDirGroup` (default 1000:100) under a guest service
+  that owns it (postgres, `StateDirectory`, podman storage). Changing
+  `dataDirOwner` no longer re-owns an existing dir either.
+- `host-persistence` creates a new persisted `hostDataDir` with the
+  factory's mode and owner instead of impermanence's root:root default.
+
 **Breaking:**
 - TLS containers no longer get the shared `client.crt`/`client.key` mounted.
   Upstreams present the container's own certificate since v0.3.0; a guest
