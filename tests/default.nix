@@ -441,7 +441,7 @@ in
             };
             innerConfig = {
               system.stateVersion = "25.11";
-              # What postgres and a StateDirectory/`Z` rule do to their dirs.
+              # ente's shape: StateDirectory owns the top dir, postgres a subdir.
               systemd.services.take-ownership = {
                 serviceConfig = {
                   Type = "oneshot";
@@ -450,7 +450,7 @@ in
                 script = ''
                   chown 71:71 /var/lib/postgresql
                   chmod 0700 /var/lib/postgresql
-                  chown 0:0 /var/lib/demo
+                  chown 999:999 /var/lib/demo
                   chmod 0750 /var/lib/demo
                 '';
               };
@@ -481,13 +481,13 @@ in
       assert stat(pg) == "755 1000 100", stat(pg)
 
       host.wait_until_succeeds("systemctl -M demo-data start take-ownership.service", timeout=120)
-      assert stat(top) == "750 0 0", stat(top)
+      assert stat(top) == "750 999 999", stat(top)
       assert stat(pg) == "700 71 71", stat(pg)
 
       # A host activation re-runs tmpfiles; it must not take the dirs back.
       host.succeed("systemctl restart systemd-tmpfiles-resetup.service")
       host.succeed("systemd-tmpfiles --create")
-      assert stat(top) == "750 0 0", f"hostDataDir reset on activation: {stat(top)}"
+      assert stat(top) == "750 999 999", f"hostDataDir reset on activation: {stat(top)}"
       assert stat(pg) == "700 71 71", f"subDir reset on activation: {stat(pg)}"
     '';
   };
