@@ -51,26 +51,12 @@ jobs:
   dispatch-lock-bump:
     needs: check
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    permissions: {}
-    steps:
-      - name: Mint GitHub App token for nix-config
-        id: app-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          client-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: kleinbem
-          repositories: nix-config
-          permission-contents: write # repository_dispatch
-      - name: Ask Maintain Flake to bump this input
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          gh api repos/kleinbem/nix-config/dispatches \
-            -f event_type=lock-bump \
-            -f "client_payload[inputs]=nix-gantry" \
-            -f "client_payload[sha]=$SHA"
-          echo "requested nix-config lock bump of nix-gantry at $SHA"
+    uses: kleinbem/actions/.github/workflows/dispatch-lock-bump.yaml@b3ffb6b2eeb888969e5f16640c84a55956581542 # v1.9.0
+    with:
+      target-owner: kleinbem
+      target-repo: nix-config
+      input: nix-gantry
+      sha: ${{ github.sha }}
+    secrets:
+      app-id: ${{ secrets.APP_ID }}
+      app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
