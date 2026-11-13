@@ -394,9 +394,9 @@ let
       fi
     '';
 
-  # Legacy `my.services.container-updater.*` bridge. Avoids `mkRenamedOptionModule`
-  # because consumers (e.g. nix-config) may declare `options.my.services` via
-  # `types.submoduleWith`, where `getAttrFromPath` on top-level `options` aborts.
+  # Submodule bridge for legacy `my.services.container-updater.*` when `options.my.services`
+  # uses `types.submoduleWith`. no-link: `mkRenamedOptionModule` resolves top-level option
+  # paths only by design; drop once consumers migrate to `services.nix-gantry.updater`.
   legacyOptionTypes = {
     enable = lib.types.bool;
     manifestUrl = lib.types.str;
@@ -419,10 +419,9 @@ in
           lib.mapAttrs (
             name: optType:
             lib.mkOption {
-              type = lib.types.nullOr optType;
-              default = null;
+              type = optType;
               visible = false;
-              apply = v: if v == null then cfg.${name} else v;
+              apply = _: cfg.${name};
             }
           ) legacyOptionTypes
           // {
@@ -431,8 +430,9 @@ in
               internal = true;
               visible = false;
               default = lib.mapAttrs (name: _: {
-                defined = builtins.any (d: d != null) options.${name}.definitions;
-                prio = options.${name}.highestPrio;
+                defined = options.${name}.isDefined;
+                prio = options.${name}.highestPrio or lib.modules.defaultOverridePriority;
+                inherit (options.${name}) definitions;
               }) legacyOptionTypes;
             };
           };
@@ -527,7 +527,7 @@ in
         let
           meta = config.my.services.container-updater._legacyMeta.${name};
         in
-        lib.mkIf meta.defined (lib.mkOverride meta.prio config.my.services.container-updater.${name})
+        lib.mkIf meta.defined (lib.mkMerge (map (lib.mkOverride meta.prio) meta.definitions))
       ) legacyOptionTypes;
 
       # Drop stale `*-previous` GC roots when a container is removed or the updater disabled.
