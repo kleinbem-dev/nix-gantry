@@ -1,33 +1,61 @@
 {
   description = "CI builds once; hosts fetch a manifest and atomically swap in a NixOS/systemd-nspawn container. No evaluation or building on the host.";
 
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    flake-parts.url = "github:hercules-ci/flake-parts";
-  };
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs =
-    inputs@{ flake-parts, self, ... }:
-    flake-parts.lib.mkFlake { inherit inputs; } {
+    inputs@{ nixpkgs, self, ... }:
+    let
+      inherit (nixpkgs) lib;
       systems = [
         "x86_64-linux"
         "aarch64-linux"
       ];
+      forAllSystems =
+        f:
+        lib.genAttrs systems (
+          system:
+          f {
+            inherit system;
+            pkgs = nixpkgs.legacyPackages.${system};
+          }
+        );
 
-      perSystem =
-        {
-          pkgs,
-          lib,
-          ...
-        }:
+      lintSrc = lib.fileset.toSource {
+        root = ./.;
+        fileset = lib.fileset.fileFilter (f: f.hasExt "nix" || f.hasExt "sh") ./.;
+      };
+    in
+    {
+      formatter = forAllSystems ({ pkgs, ... }: pkgs.nixfmt-tree);
+
+      packages = forAllSystems (
+        { pkgs, system }:
         let
-          # Options doc: evaluate the modules in a minimal nixosSystem so the
-          # standard namespaces are real. Only my.containers, my.network and
-          # environment.persistence (impermanence) are declared outside this
-          # flake and nixpkgs, so they get stubs.
+          tests = import ./tests {
+            inherit
+              pkgs
+              self
+              inputs
+              lib
+              ;
+          };
+          nix-gantry = pkgs.callPackage ./package.nix {
+            passthruTests = {
+              inherit (tests)
+                happy-path
+                health-rollback
+                bad-manifest
+                tls-mtls
+                ;
+            };
+          };
+
+          # Evaluate our modules in a minimal nixosSystem so standard NixOS
+          # namespaces exist; stub external impermanence and optional fleet paths.
           allOptions =
-            (inputs.nixpkgs.lib.nixosSystem {
-              inherit (pkgs.stdenv.hostPlatform) system;
+            (lib.nixosSystem {
+              inherit system;
               modules = [
                 ./modules/host.nix
                 ./modules/updater.nix
@@ -37,27 +65,22 @@
                     my.containers = lib.mkOption {
                       type = lib.types.attrsOf lib.types.attrs;
                       default = { };
-                      description = "Doc-generation stub for your own container presets' options -- not declared by this flake.";
                     };
                     my.network = lib.mkOption {
                       type = lib.types.attrsOf lib.types.anything;
                       default = { };
-                      description = "Doc-generation stub for your own fleet-wide network config -- not declared by this flake.";
                     };
-                    # From the external impermanence module.
                     environment.persistence = lib.mkOption {
                       type = lib.types.attrsOf lib.types.attrs;
                       default = { };
-                      description = "Doc-generation stub for the external impermanence module -- not declared by this flake.";
                     };
                   };
                   config.system.stateVersion = lib.mkDefault "25.11";
                 }
               ];
             }).options;
-          # Render only this flake's options, not the whole NixOS tree.
+
           optionsDoc = pkgs.nixosOptionsDoc {
-            # Link declarations to the repo, not to this build's /nix/store copy.
             transformOptions =
               opt:
               opt
@@ -73,98 +96,118 @@
                   }
                 ) opt.declarations;
               };
-            options = {
-              my = {
-                inherit (allOptions.my) container-host;
-                services.container-updater = allOptions.my.services.container-updater;
-              };
-            };
+            options.services.nix-gantry = allOptions.services.nix-gantry;
+          };
+
+          options-doc = pkgs.runCommandLocal "nix-gantry-options-doc.md" { } ''
+            {
+              echo '<!-- Generated via `nix build .#options-doc`. Do not hand-edit -- see CONTRIBUTING.md. -->'
+              cat ${optionsDoc.optionsCommonMark}
+            } > $out
+          '';
+        in
+        {
+          inherit nix-gantry options-doc;
+          default = nix-gantry;
+        }
+      );
+
+      apps = forAllSystems (
+        { system, ... }:
+        let
+          pkg = self.packages.${system}.nix-gantry;
+          cliApp = {
+            type = "app";
+            program = "${pkg}/bin/nix-gantry";
+            meta.description = "Manage nix-gantry containers and publish CI manifests";
           };
         in
         {
-          formatter = pkgs.nixfmt;
-
-          packages.options-doc = optionsDoc.optionsCommonMark;
-
-          checks = {
-            # The four linters run directly, no git-hooks.nix input needed.
-            lint =
-              pkgs.runCommandLocal "nix-gantry-lint"
-                {
-                  nativeBuildInputs = [
-                    pkgs.nixfmt
-                    pkgs.statix
-                    pkgs.deadnix
-                    pkgs.shellcheck
-                  ];
-                }
-                ''
-                  cp -r ${./.} src
-                  chmod -R +w src
-                  cd src
-                  echo "Checking nixfmt..."
-                  find . -name '*.nix' -print0 | xargs -0 nixfmt --check
-                  echo "Checking statix..."
-                  statix check .
-                  echo "Checking deadnix..."
-                  deadnix --fail .
-                  echo "Checking shellcheck..."
-                  shellcheck apps/publish-manifest.sh
-                  touch $out
-                '';
-          }
-          // (import ./tests {
-            inherit pkgs self inputs;
-            inherit (pkgs) lib;
-          });
-
-          apps.publish-manifest = {
+          default = cliApp;
+          nix-gantry = cliApp;
+          publish-manifest = {
             type = "app";
-            program = "${
-              pkgs.writeShellApplication {
-                name = "publish-manifest";
-                runtimeInputs = with pkgs; [
-                  coreutils
-                  gnused
-                  jq
-                  nix
-                ];
-                text = builtins.readFile ./apps/publish-manifest.sh;
-              }
-            }/bin/publish-manifest";
+            program = "${pkg}/bin/publish-manifest";
+            meta.description = "Build and cache-verify NixOS container closures into a manifest fragment";
           };
+        }
+      );
 
-          devShells.default = pkgs.mkShell {
-            shellHook = ''
-              echo "nix-gantry devshell"
-            '';
-            buildInputs = with pkgs; [
+      checks = forAllSystems (
+        { pkgs, system }:
+        {
+          package = self.packages.${system}.nix-gantry;
+          lint =
+            pkgs.runCommandLocal "nix-gantry-lint"
+              {
+                nativeBuildInputs = [
+                  pkgs.nixfmt
+                  pkgs.statix
+                  pkgs.deadnix
+                  pkgs.shellcheck
+                  pkgs.findutils
+                ];
+              }
+              ''
+                cp -r ${lintSrc} src
+                chmod -R +w src
+                cd src
+                echo "Checking nixfmt..."
+                find . -name '*.nix' -print0 | xargs -0 nixfmt --check
+                echo "Checking statix..."
+                statix check .
+                echo "Checking deadnix..."
+                deadnix --fail .
+                echo "Checking shellcheck..."
+                find . -name '*.sh' -exec shellcheck {} +
+                touch $out
+              '';
+        }
+        // (import ./tests {
+          inherit
+            pkgs
+            self
+            inputs
+            lib
+            ;
+        })
+      );
+
+      devShells = forAllSystems (
+        { pkgs, ... }:
+        {
+          default = pkgs.mkShell {
+            packages = with pkgs; [
               nixfmt
               statix
               deadnix
               shellcheck
+              nix-update
             ];
           };
-        };
+        }
+      );
 
-      flake = {
-        lib = {
-          mkContainer = import ./lib/factory.nix { inherit (inputs.nixpkgs) lib; };
-          tlsOptions = import ./lib/tls-options.nix;
-          oidcOptions = import ./lib/oidc-options.nix;
-          egressOptions = import ./lib/egress-options.nix;
-        };
+      overlays.default = final: _prev: {
+        nix-gantry = final.callPackage ./package.nix { };
+      };
 
-        nixosModules = {
-          updater = import ./modules/updater.nix;
-          host = import ./modules/host.nix;
-          # Not in `default`: opt-in, alongside your own impermanence import.
-          host-persistence = import ./modules/host-persistence.nix;
-          default.imports = [
-            ./modules/updater.nix
-            ./modules/host.nix
-          ];
-        };
+      lib = {
+        mkContainer = import ./lib/factory.nix { inherit lib; };
+        tlsOptions = import ./lib/tls-options.nix;
+        oidcOptions = import ./lib/oidc-options.nix;
+        egressOptions = import ./lib/egress-options.nix;
+      };
+
+      nixosModules = {
+        updater = import ./modules/updater.nix;
+        host = import ./modules/host.nix;
+        # Opt-in alongside the external impermanence module.
+        host-persistence = import ./modules/host-persistence.nix;
+        default.imports = [
+          ./modules/updater.nix
+          ./modules/host.nix
+        ];
       };
     };
 }

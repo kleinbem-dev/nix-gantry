@@ -1,9 +1,14 @@
-# tls-options.nix — Reusable TLS option submodule for container presets.
-# Import this in any container module that supports mTLS sidecar.
+# Reusable TLS option submodule for container presets supporting the mTLS sidecar.
 { lib }:
 {
   tls = {
     enable = lib.mkEnableOption "mTLS sidecar proxy for this container";
+    pkiDir = lib.mkOption {
+      type = lib.types.str;
+      default = "/nix/persist/pki/internal";
+      example = "/etc/pki/internal";
+      description = "Host directory holding ca.crt and certs/<name>.{crt,key}, bind-mounted read-only into the container.";
+    };
     serverPort = lib.mkOption {
       type = lib.types.int;
       default = 0;
@@ -46,7 +51,7 @@
     whitelistDomains = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      description = "Not enforced yet: reserved for domains to allow through the airlock.";
+      description = "Not enforced by the container sidecar: reserved for host-level domain allowlisting.";
     };
   };
 }

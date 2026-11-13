@@ -3,61 +3,57 @@
 ## Running the test matrix locally
 
 ```bash
-nix flake check
+nix flake check -L
 ```
 
-This runs `nix fmt`/`statix`/`deadnix`/`shellcheck` (via `checks.lint`)
-plus the three checks under `tests/`:
+This runs `checks.lint` (`nixfmt`, `statix`, `deadnix`, `shellcheck`), builds
+`packages.nix-gantry` (including `versionCheckHook`), verifies `docs/OPTIONS.md`
+is up to date (`checks.options-doc-freshness`), and runs the VM, evaluation,
+and CLI checks in `tests/default.nix`:
 
-- `happy-path` and `bad-manifest` are full `pkgs.testers.runNixOSTest`
-  VM integration tests — expect the first run to take a few minutes
-  while it builds a VM image.
-- `podman-nesting` is a pure eval-level structural check (no VM — a
-  real podman image pull needs network access NixOS VM tests don't
-  have by default).
+- `happy-path`, `health-rollback`, `bad-manifest`, `podman-run`,
+  `datadir-ownership`, and `tls-mtls` are full `pkgs.testers.runNixOSTest` VM
+  integration tests.
+- `quickstart-eval`, `podman-nesting`, `egress-replies`, `tls-sidecar`,
+  `updater-timeouts`, `host-persistence`, `option-helpers`, `module-options`,
+  and `publish-manifest-cli` are fast sandboxed evaluation and CLI checks.
 
 Run a single check directly for faster iteration:
 
 ```bash
-nix build .#checks.x86_64-linux.happy-path -L
+nix build .#checks.x86_64-linux.happy-path --no-link -L
 ```
 
 ## Module option conventions
 
-Every option lives under `my.*`, defaulting to `enable = false` where
-applicable — the same "Switchboard" convention `lib.mkContainer` and
-`nixosModules.host`/`.updater` already follow. Keep new options
-consistent with that shape.
+Canonical module options live under `services.nix-gantry.{host,updater}`,
+defaulting to `enable = false`. Legacy `my.container-host.*` and
+`my.services.container-updater.*` paths are aliased via
+`lib.mkRenamedOptionModule` for backwards compatibility.
 
 ## Options reference
 
-[`docs/OPTIONS.md`](docs/OPTIONS.md) is generated, not hand-written.
-After adding or changing an option under `my.container-host.*` or
-`my.services.container-updater.*`, regenerate it:
+[`docs/OPTIONS.md`](docs/OPTIONS.md) is generated and checked against drift by
+`checks.options-doc-freshness`. After adding or changing an option under
+`services.nix-gantry.*`, regenerate it:
 
 ```bash
-nix build .#options-doc --no-link --print-out-paths
-# copy the printed path's content into docs/OPTIONS.md, keeping the
-# generated-file header line
+cp --no-preserve=mode "$(nix build .#options-doc --no-link --print-out-paths)" docs/OPTIONS.md
 ```
 
 ## Scope
 
-This flake extracts a specific mechanism (build once in CI, host pulls
-an already-cache-verified artifact and swaps it in). Changes that add
-fleet-specific assumptions back in — hardcoded IPs, hardcoded release
-URLs, a hardcoded catalogue of containers — belong in your own
-consuming flake, not here. See README's
-[Non-goals](README.md#non-goals) for what this flake deliberately
-doesn't take on, and `lib/factory.nix`'s / `modules/host.nix`'s header
-comments for the option paths it doesn't read.
+This flake extracts a specific mechanism (build once in CI, host pulls an
+already-cache-verified artifact and swaps it in). Changes that add
+fleet-specific assumptions — hardcoded IPs, hardcoded release URLs, unfree or
+insecure package exemptions, or a hardcoded catalogue of containers — belong in
+your own consuming flake, not here. See README's
+[Non-goals](README.md#non-goals).
 
 ## Versioning and PRs
 
 - Keep the test matrix green (`nix flake check`).
-- See README's [Versioning](README.md#versioning) section for what
-  counts as breaking at this `0.x` stage. If your PR is breaking by
-  that definition, say so in the description and add an entry under
-  an "unreleased" heading in [`CHANGELOG.md`](CHANGELOG.md).
-- Releases are tagged `vX.Y.Z` with a matching GitHub release; the
-  changelog entry becomes the release notes.
+- Format Nix code with `nix fmt` (RFC 0166 `nixfmt`).
+- See README's [Versioning](README.md#versioning) section for what counts as
+  breaking at this `0.x` stage, and record changes under `## Unreleased` in
+  [`CHANGELOG.md`](CHANGELOG.md).

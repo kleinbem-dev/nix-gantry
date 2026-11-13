@@ -47,31 +47,33 @@ they just pull what a beefier CI runner already built and cache-verified.
 
 ## What's in this flake
 
+- **`packages.nix-gantry`** (`packages.default`, `overlays.default`) — the
+  `nix-gantry` CLI (`publish-manifest`, `status`, `stage`, `activate`,
+  `update`, `rollback`), plus the `publish-manifest` compatibility alias and
+  `$out/share/nix-gantry/{lib,modules}`. Installed on hosts automatically when
+  `services.nix-gantry.updater.enable` is on.
 - **`lib.mkContainer`** — builds a `containers.<name>` block: nspawn
   networking/capabilities/device passthrough, optional podman-in-nspawn
   boilerplate, optional mTLS sidecar, and (when the container's name is
   registered with the updater) the standalone symlink wiring.
-- **`nixosModules.updater`** — the systemd timer/units: stage (fetch
-  manifest, realise, swap symlink — never touches the running
-  container), activate (restart to pick up the staged closure), a bulk
-  nightly orchestrator, and a boot-time bootstrap for a container that's
-  never been staged.
-- **`nixosModules.host`** — per-host glue: bridge/subnet/firewall setup,
-  auto-derives the updater's container list from your enabled
-  containers.
+- **`nixosModules.updater`** — `services.nix-gantry.updater.*`: stage (fetch
+  manifest, realise, swap symlink — never touches the running container),
+  activate (restart to pick up the staged closure + healthcheck + rollback), a
+  bulk nightly orchestrator, and first-boot / live-switch bootstrapping.
+- **`nixosModules.host`** — `services.nix-gantry.host.*`: bridge/nftables
+  firewall setup and automatic updater container-list derivation.
 - **`nixosModules.host-persistence`** — optional, not part of `default`:
-  wires enabled containers' `hostDataDir`s into
+  wires enabled containers' tmpfs-backed `hostDataDir`s into
   [`impermanence`](https://github.com/nix-community/impermanence)'s
   `environment.persistence`. Import it alongside impermanence itself and
-  set `my.container-host.enablePersistence = true`; without that it adds
+  set `services.nix-gantry.host.enablePersistence = true`; without that it adds
   nothing.
 - **`nixosModules.default`** — `updater` + `host` composed
   (`host-persistence` is opt-in, see above).
-- **`apps.publish-manifest`** — the CI-side half: builds a system's
-  containers from a `nixosConfiguration`, verifies each is in one of the
-  `--substituter` caches you pass (drops anything that isn't rather than
-  blocking), and
-  emits a manifest fragment. See
+- **`apps.publish-manifest`** / **`apps.nix-gantry`** — the CI-side half:
+  builds a system's containers from a factory `nixosConfiguration`, verifies
+  every closure path is present (and optionally signed) in one of the
+  `--substituter` caches you pass, and emits a manifest fragment. See
   [`.github/workflows/publish-manifest.yaml`](.github/workflows/publish-manifest.yaml)
   for the reusable workflow that runs this per-system and publishes the
   merged manifest as a GitHub release asset.
@@ -84,8 +86,10 @@ build-vm` with no external infrastructure required.
 
 ## Options reference
 
-[`docs/OPTIONS.md`](docs/OPTIONS.md) — every `my.container-host.*` and
-`my.services.container-updater.*` option, generated from source.
+[`docs/OPTIONS.md`](docs/OPTIONS.md) — every `services.nix-gantry.host.*` and
+`services.nix-gantry.updater.*` option, generated from source. Legacy
+`my.container-host.*` and `my.services.container-updater.*` paths remain wired
+via `lib.mkRenamedOptionModule`.
 
 ## External requirements
 
@@ -112,11 +116,11 @@ defaults for both fields before calling into this flake's `mkContainer`,
 so nix-gantry itself stays option-path-agnostic while the fleet keeps
 its own convention.
 
-Every container you build with `lib.mkContainer` should declare its own
-options under `my.containers.<name>` (with at least `enable` and, if it
-has persistent state, `hostDataDir`) — `nixosModules.host` derives the
-updater's container list and persistence directories from that
-convention. See [`examples/`](examples/) for a working container preset.
+Every container you build with `lib.mkContainer` can declare its own
+options under `services.nix-gantry.containers.<name>` or `my.containers.<name>`
+(with `enable` and, if it has persistent state, `hostDataDir`) —
+`nixosModules.host-persistence` derives tmpfs-backed persistence directories
+from that convention. See [`examples/`](examples/) for a working container preset.
 
 ## Non-goals
 
@@ -144,8 +148,8 @@ something to check itself against:
 
 Pre-`1.0`, following the common `0.x` convention: **`0.MINOR` bumps are
 breaking, `0.PATCH` bumps are not.** "Breaking" means: a `lib.mkContainer`
-argument becomes required or changes meaning, a `my.container-host`/
-`my.services.container-updater` option is removed/renamed, or a default
+argument becomes required or changes meaning, a `services.nix-gantry.host`/
+`services.nix-gantry.updater` option is removed/renamed without an alias, or a default
 value change alters behavior for an existing consumer who didn't set
 that option explicitly (as opposed to, say, a new optional field, a bug
 fix, or added test coverage). See [`CHANGELOG.md`](CHANGELOG.md) for

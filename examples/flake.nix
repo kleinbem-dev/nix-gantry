@@ -24,10 +24,8 @@
           system.stateVersion = "25.11";
         };
 
-      # A minimal inline preset (a real one declares options.my.containers.<name>).
-      # Import the whole mkContainer result, not just `.containers`: the
-      # container@ unitConfig (ConditionPathExists, restart limits) is a sibling
-      # key, and without it container@ starts before anything is staged.
+      # Minimal inline preset. Import the whole mkContainer attrset (not just
+      # `.containers`) so container@ unitConfig and tmpfiles rules are wired too.
       demoContainer = {
         imports = [
           (
@@ -46,9 +44,9 @@
         ];
       };
 
-      # Factory build: no container-updater registration here, so isStandalone
-      # is false and .path is a real closure. In production CI does this
-      # (.github/workflows/publish-manifest.yaml).
+      # Factory build: no updater registration here, so isStandalone is false
+      # and `.path` is a real closure. In production CI builds this via
+      # `nix-gantry publish-manifest` (.github/workflows/publish-manifest.yaml).
       factoryEval = lib.nixosSystem {
         inherit system;
         modules = [ demoContainer ];
@@ -68,23 +66,26 @@
         in
         {
           imports = [
-            nix-gantry.nixosModules.host
-            nix-gantry.nixosModules.updater
+            nix-gantry.nixosModules.default
             demoContainer
           ];
 
-          my.container-host = {
-            enable = true;
-            subnet = "10.233.1.0/24";
-            hostAddress = "10.233.1.1";
-            manifestUrl = "file://${manifestFile}";
-            # enablePersistence defaults to false and the bridge is created
-            # automatically. See README's "External requirements".
+          services.nix-gantry = {
+            host = {
+              enable = true;
+              subnet = "10.233.1.0/24";
+              hostAddress = "10.233.1.1";
+              manifestUrl = "file://${manifestFile}";
+            };
+            updater.containers = [ "hello" ];
           };
 
-          my.services.container-updater.containers = [ "hello" ];
-
-          networking.firewall.enable = false;
+          networking.interfaces.cbr0.ipv4.addresses = [
+            {
+              address = "10.233.1.1";
+              prefixLength = 24;
+            }
+          ];
           system.stateVersion = "25.11";
         };
     in
@@ -94,8 +95,8 @@
           inherit system;
           modules = [ host ];
         };
-        # Only for CI (../.github/workflows/ci.yaml), which runs
-        # apps.publish-manifest against this factory-mode config.
+        # Fixture for CI (.github/workflows/ci.yaml), which runs publish-manifest
+        # against this factory-mode configuration.
         quickstart-factory = factoryEval;
       };
     };

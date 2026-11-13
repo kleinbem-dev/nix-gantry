@@ -1,41 +1,9 @@
 <!-- Generated via `nix build .#options-doc`. Do not hand-edit -- see CONTRIBUTING.md. -->
-## my\.container-host\.enable
+## services\.nix-gantry\.host\.enable
 
 
 
-Whether to enable Container Host (LXD networking, persistence, auto-update)\.
-
-
-
-*Type:*
-boolean
-
-
-
-*Default:*
-
-```nix
-false
-```
-
-
-
-*Example:*
-
-```nix
-true
-```
-
-*Declared by:*
- - [modules/host\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/host.nix)
-
-
-
-## my\.container-host\.enablePersistence
-
-
-
-Whether to enable Impermanence for container host\.
+Whether to enable container host bridge networking and updater wiring\.
 
 
 
@@ -63,9 +31,41 @@ true
 
 
 
-## my\.container-host\.bridge
+## services\.nix-gantry\.host\.enablePersistence
 
-Container bridge name
+
+
+Whether to enable impermanence wiring for container host data directories\.
+
+
+
+*Type:*
+boolean
+
+
+
+*Default:*
+
+```nix
+false
+```
+
+
+
+*Example:*
+
+```nix
+true
+```
+
+*Declared by:*
+ - [modules/host\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/host.nix)
+
+
+
+## services\.nix-gantry\.host\.bridge
+
+Container bridge interface name\.
 
 
 
@@ -85,15 +85,13 @@ string
 
 
 
-## my\.container-host\.excludeFromStandalone
+## services\.nix-gantry\.host\.excludeFromStandalone
 
 
 
-Containers that must build embedded on this host and never be
-treated as standalone/pulled at all — for a container-factory
-structural conflict (e\.g\. an attrsOf option that recurses in the
-factory’s eval), not merely “don’t auto-restart” (use
-excludeFromUpdater for that)\.
+Containers built embedded on this host and never pulled from the
+manifest — for structural evaluation conflicts, not merely skipping
+unattended restarts (use ` excludeFromUpdater ` for that)\.
 
 
 
@@ -113,15 +111,14 @@ list of string
 
 
 
-## my\.container-host\.excludeFromUpdater
+## services\.nix-gantry\.host\.excludeFromUpdater
 
 
 
-Containers still built by container-factory and pulled/cached from the
-CI manifest, but excluded from the automatic nightly bulk update —
-e\.g\. a reverse proxy you don’t want unattended-restarted\. Still
-stageable/updatable any time via
-` systemctl start update-container@<name> `\.
+Containers still built standalone and pulled from the CI manifest, but
+excluded from the automatic nightly bulk update — e\.g\. a reverse proxy
+you do not want restarted unattended\. Still updatable manually via
+` nix-gantry update <name> ` or ` systemctl start update-container@<name> `\.
 
 
 
@@ -153,11 +150,11 @@ list of string
 
 
 
-## my\.container-host\.hostAddress
+## services\.nix-gantry\.host\.hostAddress
 
 
 
-Host bridge IP on container subnet
+Host bridge IP on the container subnet\.
 
 
 
@@ -177,16 +174,14 @@ string
 
 
 
-## my\.container-host\.journal\.forward
+## services\.nix-gantry\.host\.journal\.forward
 
 
 
-Stream each container’s journal to /var/log/containers/\<name> on the
-host (nspawn --forward-journal, needs systemd 261 or newer)\. Readable by the
-systemd-journal group with ` journalctl -D `, and it survives container
-restarts\. Guests need systemd 256 or newer; an older guest ignores the
-forwarding and keeps its journal inside the container\. With
-enablePersistence, nixosModules\.host-persistence persists the directory\.
+Stream each container’s journal to ` /var/log/containers/<name> ` on the
+host (` nspawn --forward-journal `, requires host systemd >= 261 and
+guest systemd >= 256)\. Readable by the ` systemd-journal ` group via
+` journalctl -D ` across container restarts\.
 
 
 
@@ -206,7 +201,7 @@ lib.versionAtLeast config.systemd.package.version "261"
 
 
 
-## my\.container-host\.journal\.maxUse
+## services\.nix-gantry\.host\.journal\.maxUse
 
 
 
@@ -230,11 +225,11 @@ string
 
 
 
-## my\.container-host\.journal\.maxUseFor
+## services\.nix-gantry\.host\.journal\.maxUseFor
 
 
 
-Per-container overrides of ` maxUse `, by container name\.
+Per-container overrides of ` maxUse `, keyed by container name\.
 
 
 
@@ -264,13 +259,11 @@ attribute set of string
 
 
 
-## my\.container-host\.manifestUrl
+## services\.nix-gantry\.host\.manifestUrl
 
 
 
-Forwarded to my\.services\.container-updater\.manifestUrl\. Set here
-(once, alongside subnet/hostAddress) instead of separately
-importing nixosModules\.updater just to set one string\.
+Forwarded to ` services.nix-gantry.updater.manifestUrl `\.
 
 
 
@@ -290,11 +283,43 @@ string
 
 
 
-## my\.container-host\.subnet
+## services\.nix-gantry\.host\.persistPath
 
 
 
-Container subnet (e\.g\., 10\.85\.48\.0/24)
+Impermanence mount root under ` environment.persistence ` when ` enablePersistence ` is enabled\.
+
+
+
+*Type:*
+string
+
+
+
+*Default:*
+
+```nix
+"/nix/persist"
+```
+
+
+
+*Example:*
+
+```nix
+"/persist"
+```
+
+*Declared by:*
+ - [modules/host\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/host.nix)
+
+
+
+## services\.nix-gantry\.host\.subnet
+
+
+
+Container subnet CIDR\.
 
 
 
@@ -314,11 +339,11 @@ string
 
 
 
-## my\.services\.container-updater\.enable
+## services\.nix-gantry\.updater\.enable
 
 
 
-Whether to enable Automated container closures updater via Nix Profiles\.
+Whether to enable automated container closures updater via Nix profiles\.
 
 
 
@@ -346,11 +371,73 @@ true
 
 
 
-## my\.services\.container-updater\.autoRollback
+## services\.nix-gantry\.updater\.package
 
 
 
-Automatically roll back to the previous container generation if the
+The ` nix-gantry ` CLI package installed on the host, or ` null ` to omit it\.
+
+
+
+*Type:*
+null or package
+
+
+
+*Default:*
+
+```nix
+pkgs.nix-gantry
+```
+
+*Declared by:*
+ - [modules/updater\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/updater.nix)
+
+
+
+## services\.nix-gantry\.updater\.activateLast
+
+
+
+Containers activated sequentially in Phase 3 after all other changed
+containers finish Phase 2 — e\.g\. a self-hosted binary cache container
+that should keep serving while peers stage and restart\.
+
+
+
+*Type:*
+list of string
+
+
+
+*Default:*
+
+```nix
+[
+  "attic"
+]
+```
+
+
+
+*Example:*
+
+```nix
+[
+  "attic"
+]
+```
+
+*Declared by:*
+ - [modules/updater\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/updater.nix)
+
+
+
+## services\.nix-gantry\.updater\.autoRollback
+
+
+
+Automatically roll back to the previous container generation when a
 container fails to start or fails its healthcheck after activation\.
 
 
@@ -371,41 +458,11 @@ true
 
 
 
-## my\.services\.container-updater\.containers
+## services\.nix-gantry\.updater\.containers
 
 
 
-List of standalone containers to auto-update\.
-
-
-
-*Type:*
-list of string
-
-
-
-*Default:*
-
-```nix
-[ ]
-```
-
-*Declared by:*
- - [modules/updater\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/updater.nix)
-
-
-
-## my\.services\.container-updater\.excludeFromNightly
-
-
-
-Containers from ` containers ` (above) to skip in the automatic nightly
-bulk update (e\.g\. a reverse proxy you don’t want unattended-restarted)\.
-They’re still built by container-factory, cached from the CI manifest,
-staged automatically on first boot if never staged
-(container-updater-bootstrap), and updatable any time via
-` systemctl start update-container@<name> ` — this only opts them out
-of the automatic 03:00 timer\.
+Standalone containers managed by the updater\.
 
 
 
@@ -420,18 +477,66 @@ list of string
 [ ]
 ```
 
+
+
+*Example:*
+
+```nix
+[
+  "caddy"
+  "gatus"
+]
+```
+
 *Declared by:*
  - [modules/updater\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/updater.nix)
 
 
 
-## my\.services\.container-updater\.healthcheckTimeoutSec
+## services\.nix-gantry\.updater\.excludeFromNightly
+
+
+
+Containers from ` containers ` skipped by the automatic nightly bulk
+update\. Still standalone, bootstrapped on first boot if never staged,
+and updatable manually via ` nix-gantry update <name> ` or
+` systemctl start update-container@<name> `\.
+
+
+
+*Type:*
+list of string
+
+
+
+*Default:*
+
+```nix
+[ ]
+```
+
+
+
+*Example:*
+
+```nix
+[
+  "caddy"
+]
+```
+
+*Declared by:*
+ - [modules/updater\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/updater.nix)
+
+
+
+## services\.nix-gantry\.updater\.healthcheckTimeoutSec
 
 
 
 Maximum time (seconds) to wait for a container to reach active state
-and pass any configured healthcheck after restart\. A healthcheck
-still running at the end is killed and counts as failed\.
+and pass any configured healthcheck after restart\. A healthcheck still
+running at the deadline is killed and counts as failed\.
 
 
 
@@ -451,15 +556,13 @@ positive integer, meaning >0
 
 
 
-## my\.services\.container-updater\.healthchecks
+## services\.nix-gantry\.updater\.healthchecks
 
 
 
-Optional custom healthcheck shell command per container name to verify service health\.
-Executed on the host with ` bash -c `, with systemd, nix, coreutils and curl on PATH
-and the container name in ` $CONTAINER `; must exit 0 when healthy\. Retried until
-` healthcheckTimeoutSec ` runs out\.
-Example: { “caddy” = “curl -fsS http://10\.85\.46\.107:80/health”; }
+Optional host-side shell command per container name to verify health\.
+Executed with systemd, nix, coreutils and curl on PATH and the
+container name in ` $CONTAINER `; retried until ` healthcheckTimeoutSec `\.
 
 
 
@@ -474,27 +577,41 @@ attribute set of string
 { }
 ```
 
+
+
+*Example:*
+
+```nix
+{
+  caddy = "curl -fsS http://10.85.46.107:80/health";
+}
+```
+
 *Declared by:*
  - [modules/updater\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/updater.nix)
 
 
 
-## my\.services\.container-updater\.manifestUrl
+## services\.nix-gantry\.updater\.manifestUrl
 
 
 
 URL of the CI-published container manifest: a JSON map of
-system → container name → store path, generated by the
-promote-production workflow for the exact SHA the ` production `
-tag points at\. Consuming the manifest instead of evaluating the
-flake keeps the nightly update eval-free on the device — an
-RPi-class host only fetches a JSON file and substitutes a store
-path from the binary cache\.
+system -> container name -> store path\. Consuming the manifest
+instead of evaluating a flake keeps updates evaluation-free on the host\.
 
 
 
 *Type:*
 string
+
+
+
+*Example:*
+
+```nix
+"https://github.com/you/your-flake/releases/download/container-manifest/manifest.json"
+```
 
 *Declared by:*
  - [modules/updater\.nix](https://github.com/kleinbem-dev/nix-gantry/blob/main/modules/updater.nix)
