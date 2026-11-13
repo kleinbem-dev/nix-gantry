@@ -137,38 +137,50 @@ let
         flock 9
       }
 
+      STAGE_GCROOT=""
+      cleanup_gcroot() {
+        if [ -n "$STAGE_GCROOT" ]; then
+          rm -f -- "$STAGE_GCROOT"
+        fi
+      }
+
       swap_link() {
         local tmp="$2.tmp.$$"
-        ln -sfn -- "$1" "$tmp"
-        mv -Tf -- "$tmp" "$2"
+        ln -sfn -- "$1" "$tmp" || return 1
+        mv -Tf -- "$tmp" "$2" || {
+          rm -f -- "$tmp"
+          return 1
+        }
       }
 
       # Keep /var/lib/machines/<name>/current -> $profile invariant across both
       # profile-generation rollbacks and fallback `previous` symlink restores.
+      # Explicit `|| return 1` guards are required because `if roll_back` disables errexit.
       roll_back() {
         local c=$1
         local profile="/nix/var/nix/profiles/containers/$c"
         local current="/var/lib/machines/$c/current"
         local previous="/var/lib/machines/$c/previous"
-        local cur_target="" prev_target=""
+        local cur_target="" prev_target="" profile_target=""
         if [ -e "$current" ]; then
-          cur_target=$(readlink -f -- "$current")
+          cur_target=$(readlink -f -- "$current") || return 1
         fi
         if nix-env --profile "$profile" --rollback 2>/dev/null; then
-          if [ "$(readlink -- "$current" 2>/dev/null || true)" != "$profile" ]; then
-            swap_link "$profile" "$current"
-          fi
-          if [ -z "$cur_target" ] || [ "$(readlink -f -- "$profile")" != "$cur_target" ]; then
+          profile_target=$(readlink -f -- "$profile") || return 1
+          if [ -z "$cur_target" ] || [ "$profile_target" != "$cur_target" ]; then
+            if [ "$(readlink -- "$current" 2>/dev/null || true)" != "$profile" ]; then
+              swap_link "$profile" "$current" || return 1
+            fi
             echo "Rolled back Nix profile $profile to previous generation."
             return 0
           fi
         fi
         if [ -e "$previous" ]; then
-          prev_target=$(readlink -f -- "$previous")
-          if [ -n "$prev_target" ] && [ "$prev_target" != "$cur_target" ]; then
+          prev_target=$(readlink -f -- "$previous") || return 1
+          if [ -n "$prev_target" ] && [ -e "$prev_target" ] && [ "$prev_target" != "$cur_target" ]; then
             echo "Falling back to previous closure: $prev_target"
-            nix-env --profile "$profile" --set -- "$prev_target"
-            swap_link "$profile" "$current"
+            nix-env --profile "$profile" --set -- "$prev_target" || return 1
+            swap_link "$profile" "$current" || return 1
             return 0
           fi
         fi
@@ -185,7 +197,11 @@ let
         local CONTAINER=''${1:-}
         validate_container "$CONTAINER"
 
-        mkdir -p /nix/var/nix/profiles/containers /run/container-updater "/var/lib/machines/$CONTAINER"
+        mkdir -p \
+          /nix/var/nix/profiles/containers \
+          /nix/var/nix/gcroots/containers \
+          /run/container-updater \
+          "/var/lib/machines/$CONTAINER"
         acquire_lock "$CONTAINER"
 
         echo "Staging update for container: $CONTAINER (system: ${hostSystem})"
@@ -206,11 +222,14 @@ let
 
         echo "Manifest (rev $REV): $CONTAINER -> $STORE_PATH"
         echo "Substituting from binary cache..."
-        local gcroot="/run/container-updater/gcroot-$CONTAINER"
-        nix-store --add-root "$gcroot" --indirect --realise -- "$STORE_PATH" >/dev/null
+        STAGE_GCROOT="/run/container-updater/gcroot-$CONTAINER"
+        trap cleanup_gcroot EXIT INT TERM
+        nix-store --add-root "$STAGE_GCROOT" --indirect --realise -- "$STORE_PATH" >/dev/null
 
         local PROFILE="/nix/var/nix/profiles/containers/$CONTAINER"
         local CURRENT="/var/lib/machines/$CONTAINER/current"
+        local prev_link="/var/lib/machines/$CONTAINER/previous"
+        local prev_gcroot="/nix/var/nix/gcroots/containers/$CONTAINER-previous"
         local OLD_PATH="none"
         if [ -e "$CURRENT" ]; then
           OLD_PATH=$(readlink -f -- "$CURRENT")
@@ -218,14 +237,29 @@ let
           OLD_PATH=$(readlink -f -- "$PROFILE")
         fi
 
+        # Root `$OLD_PATH` under /nix/var/nix/gcroots before moving the profile so
+        # host GC of old profile generations cannot collect the fallback closure.
         if [ "$OLD_PATH" != "none" ] && [ -e "$OLD_PATH" ] && [ "$OLD_PATH" != "$STORE_PATH" ]; then
           echo "Preserving previous generation symlink for $CONTAINER: $OLD_PATH"
-          ln -sfn -- "$OLD_PATH" "/var/lib/machines/$CONTAINER/previous"
+          swap_link "$OLD_PATH" "$prev_gcroot"
+          swap_link "$OLD_PATH" "$prev_link"
+        elif [ -L "$prev_link" ]; then
+          local existing_prev
+          existing_prev=$(readlink -f -- "$prev_link" || true)
+          if [ -n "$existing_prev" ] && [ -e "$existing_prev" ]; then
+            swap_link "$existing_prev" "$prev_gcroot"
+          else
+            rm -f -- "$prev_link" "$prev_gcroot"
+          fi
+        else
+          rm -f -- "$prev_gcroot"
         fi
 
         echo "Registering $CONTAINER as a Nix profile (GC safe)..."
         nix-env --profile "$PROFILE" --set -- "$STORE_PATH"
-        rm -f -- "$gcroot"
+        cleanup_gcroot
+        STAGE_GCROOT=""
+        trap - EXIT INT TERM
 
         if [ "$(readlink -- "$CURRENT" 2>/dev/null || true)" != "$PROFILE" ]; then
           echo "Pointing $CURRENT at $PROFILE..."
@@ -301,6 +335,7 @@ let
           echo "Initiating automatic rollback for $CONTAINER..."
           if roll_back "$CONTAINER"; then
             echo "Restarting container@$CONTAINER on restored closure..."
+            systemctl reset-failed "container@$CONTAINER" || true
             if systemctl restart "container@$CONTAINER"; then
               echo "Rollback completed for $CONTAINER."
             else
@@ -320,6 +355,7 @@ let
         echo "Rollback requested for container: $CONTAINER"
         roll_back "$CONTAINER"
         echo "Restarting container@$CONTAINER on restored closure..."
+        systemctl reset-failed "container@$CONTAINER" || true
         systemctl restart "container@$CONTAINER"
         echo "Rollback completed for $CONTAINER."
       }
@@ -335,6 +371,28 @@ let
       esac
     '';
   };
+
+  reconcilePreviousRoots =
+    let
+      keepCases =
+        lib.optionalString (cfg.enable && registered != [ ])
+          "${lib.concatMapStringsSep "|" lib.escapeShellArg registered}) ;;";
+    in
+    ''
+      if [ -z "''${IN_NIXOS_SYSTEMD_STAGE1:-}" ] && [ -d /nix/var/nix/gcroots/containers ]; then
+        for root_link in /nix/var/nix/gcroots/containers/*-previous; do
+          [ -L "$root_link" ] || [ -e "$root_link" ] || continue
+          c=''${root_link#/nix/var/nix/gcroots/containers/}
+          c=''${c%-previous}
+          case "$c" in
+            ${keepCases}
+            *)
+              ${pkgs.coreutils}/bin/rm -f -- "$root_link"
+              ;;
+          esac
+        done
+      fi
+    '';
 
   renamedOptions = [
     "enable"
@@ -435,188 +493,197 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable {
-    environment.systemPackages = lib.optional (cfg.package != null) cfg.package;
+  config = lib.mkMerge [
+    {
+      # Drop stale `*-previous` GC roots when a container is removed or the updater disabled.
+      system.activationScripts.container-updater-reconcile-gcroots = lib.stringAfter [
+        "var"
+      ] reconcilePreviousRoots;
+    }
+    (lib.mkIf cfg.enable {
+      environment.systemPackages = lib.optional (cfg.package != null) cfg.package;
 
-    systemd = {
-      services = {
-        "update-container-stage@" = {
-          description = "Stage update for NixOS Container %i (no restart)";
-          after = [ "network-online.target" ];
-          wants = [ "network-online.target" ];
-          # Oneshot CLI/timer actions (`Restart=no`) should never trip start-limit-hit
-          # when an operator retries `nix-gantry stage/activate/update/rollback`.
-          unitConfig.StartLimitIntervalSec = 0;
-          scriptArgs = "%i";
-          script = ''
-            exec ${lib.getExe updaterCtl} stage "$@"
-          '';
-          serviceConfig = {
-            Type = "oneshot";
-            TimeoutStartSec = "15m";
+      systemd = {
+        services = {
+          "update-container-stage@" = {
+            description = "Stage update for NixOS Container %i (no restart)";
+            after = [ "network-online.target" ];
+            wants = [ "network-online.target" ];
+            # Oneshot CLI/timer actions (`Restart=no`) should never trip start-limit-hit
+            # when an operator retries `nix-gantry stage/activate/update/rollback`.
+            unitConfig.StartLimitIntervalSec = 0;
+            scriptArgs = "%i";
+            script = ''
+              exec ${lib.getExe updaterCtl} stage "$@"
+            '';
+            serviceConfig = {
+              Type = "oneshot";
+              TimeoutStartSec = "15m";
+            };
           };
-        };
 
-        "update-container-activate@" = {
-          description = "Activate staged update for NixOS Container %i (restart + healthcheck)";
-          unitConfig.StartLimitIntervalSec = 0;
-          scriptArgs = "%i";
-          script = ''
-            exec ${lib.getExe updaterCtl} activate "$@"
-          '';
-          serviceConfig = {
-            Type = "oneshot";
-            TimeoutStartSec = activateTimeoutSec;
+          "update-container-activate@" = {
+            description = "Activate staged update for NixOS Container %i (restart + healthcheck)";
+            unitConfig.StartLimitIntervalSec = 0;
+            scriptArgs = "%i";
+            script = ''
+              exec ${lib.getExe updaterCtl} activate "$@"
+            '';
+            serviceConfig = {
+              Type = "oneshot";
+              TimeoutStartSec = activateTimeoutSec;
+            };
           };
-        };
 
-        "update-container-rollback@" = {
-          description = "Roll back NixOS Container %i to previous generation";
-          unitConfig.StartLimitIntervalSec = 0;
-          scriptArgs = "%i";
-          script = ''
-            exec ${lib.getExe updaterCtl} rollback "$@"
-          '';
-          serviceConfig = {
-            Type = "oneshot";
-            TimeoutStartSec = rollbackTimeoutSec;
+          "update-container-rollback@" = {
+            description = "Roll back NixOS Container %i to previous generation";
+            unitConfig.StartLimitIntervalSec = 0;
+            scriptArgs = "%i";
+            script = ''
+              exec ${lib.getExe updaterCtl} rollback "$@"
+            '';
+            serviceConfig = {
+              Type = "oneshot";
+              TimeoutStartSec = rollbackTimeoutSec;
+            };
           };
-        };
 
-        "update-container@" = {
-          description = "Update NixOS Container %i (stage + activate)";
-          unitConfig.StartLimitIntervalSec = 0;
-          path = [ pkgs.systemd ];
-          scriptArgs = "%i";
-          script = ''
-            systemctl start --wait "update-container-stage@$1.service"
-            systemctl start --wait "update-container-activate@$1.service"
-          '';
-          serviceConfig = {
-            Type = "oneshot";
-            TimeoutStartSec = "infinity";
+          "update-container@" = {
+            description = "Update NixOS Container %i (stage + activate)";
+            unitConfig.StartLimitIntervalSec = 0;
+            path = [ pkgs.systemd ];
+            scriptArgs = "%i";
+            script = ''
+              systemctl start --wait "update-container-stage@$1.service"
+              systemctl start --wait "update-container-activate@$1.service"
+            '';
+            serviceConfig = {
+              Type = "oneshot";
+              TimeoutStartSec = "infinity";
+            };
           };
-        };
 
-        "update-containers" = lib.mkIf (nightly != [ ]) {
-          description = "Smart bulk update of standalone NixOS containers";
-          unitConfig.StartLimitIntervalSec = 0;
-          path = [ pkgs.systemd ];
-          serviceConfig = {
-            Type = "oneshot";
-            TimeoutStartSec = "infinity";
-          };
-          script = ''
-            ALL_CONTAINERS=(${lib.escapeShellArgs nightly})
-            PHASE2_CONTAINERS=(${lib.escapeShellArgs phase2Containers})
-            PHASE3_CONTAINERS=(${lib.escapeShellArgs phase3Containers})
-            failed=0
-            pids=()
-
-            wait_all() {
-              local pid
-              for pid in "''${pids[@]}"; do
-                wait "$pid" || failed=1
-              done
+          "update-containers" = lib.mkIf (nightly != [ ]) {
+            description = "Smart bulk update of standalone NixOS containers";
+            unitConfig.StartLimitIntervalSec = 0;
+            path = [ pkgs.systemd ];
+            serviceConfig = {
+              Type = "oneshot";
+              TimeoutStartSec = "infinity";
+            };
+            script = ''
+              ALL_CONTAINERS=(${lib.escapeShellArgs nightly})
+              PHASE2_CONTAINERS=(${lib.escapeShellArgs phase2Containers})
+              PHASE3_CONTAINERS=(${lib.escapeShellArgs phase3Containers})
+              failed=0
               pids=()
-            }
 
-            needs_activation() {
-              [ -e "/run/container-updater/changed-$1" ] && return 0
-              machinectl status "$1" >/dev/null 2>&1 && return 1
-              return 0
-            }
+              wait_all() {
+                local pid
+                for pid in "''${pids[@]}"; do
+                  wait "$pid" || failed=1
+                done
+                pids=()
+              }
 
-            echo "=== Phase 1: staging updates in parallel ==="
-            for c in "''${ALL_CONTAINERS[@]}"; do
-              echo "  staging $c..."
-              systemctl start --wait "update-container-stage@$c.service" &
-              pids+=("$!")
-            done
-            wait_all
+              needs_activation() {
+                [ -e "/run/container-updater/changed-$1" ] && return 0
+                machinectl status "$1" >/dev/null 2>&1 && return 1
+                return 0
+              }
 
-            echo "=== Phase 2: activating changed containers in parallel ==="
-            for c in "''${PHASE2_CONTAINERS[@]}"; do
-              if needs_activation "$c"; then
-                echo "  activating $c..."
-                systemctl start --wait "update-container-activate@$c.service" &
+              echo "=== Phase 1: staging updates in parallel ==="
+              for c in "''${ALL_CONTAINERS[@]}"; do
+                echo "  staging $c..."
+                systemctl start --wait "update-container-stage@$c.service" &
                 pids+=("$!")
+              done
+              wait_all
+
+              echo "=== Phase 2: activating changed containers in parallel ==="
+              for c in "''${PHASE2_CONTAINERS[@]}"; do
+                if needs_activation "$c"; then
+                  echo "  activating $c..."
+                  systemctl start --wait "update-container-activate@$c.service" &
+                  pids+=("$!")
+                fi
+              done
+              wait_all
+
+              for c in "''${PHASE3_CONTAINERS[@]}"; do
+                if needs_activation "$c"; then
+                  echo "=== Phase 3: activating $c last ==="
+                  systemctl start --wait "update-container-activate@$c.service" || failed=1
+                fi
+              done
+
+              if [ "$failed" -ne 0 ]; then
+                echo "Bulk update finished with failures; see update-container-stage@/activate@ logs." >&2
+                exit 1
               fi
-            done
-            wait_all
-
-            for c in "''${PHASE3_CONTAINERS[@]}"; do
-              if needs_activation "$c"; then
-                echo "=== Phase 3: activating $c last ==="
-                systemctl start --wait "update-container-activate@$c.service" || failed=1
-              fi
-            done
-
-            if [ "$failed" -ne 0 ]; then
-              echo "Bulk update finished with failures; see update-container-stage@/activate@ logs." >&2
-              exit 1
-            fi
-            echo "Bulk update complete."
-          '';
-        };
-
-        "container-updater-bootstrap" = lib.mkIf (registered != [ ]) {
-          description = "Bootstrap standalone containers that have never been staged";
-          after = [ "network-online.target" ];
-          wants = [ "network-online.target" ];
-          wantedBy = [ "multi-user.target" ];
-          path = [ pkgs.systemd ];
-          serviceConfig = {
-            Type = "oneshot";
-            TimeoutStartSec = "infinity";
+              echo "Bulk update complete."
+            '';
           };
-          script = ''
-            for c in ${lib.escapeShellArgs registered}; do
-              if [ ! -e "/var/lib/machines/$c/current" ]; then
-                echo "Container $c has no staged closure — bootstrapping..."
-                systemctl start --wait "update-container@$c.service" || \
-                  echo "Bootstrap of $c failed; it will retry on the nightly timer." >&2
-              fi
-            done
-          '';
+
+          "container-updater-bootstrap" = lib.mkIf (registered != [ ]) {
+            description = "Bootstrap standalone containers that have never been staged";
+            after = [ "network-online.target" ];
+            wants = [ "network-online.target" ];
+            wantedBy = [ "multi-user.target" ];
+            path = [ pkgs.systemd ];
+            serviceConfig = {
+              Type = "oneshot";
+              TimeoutStartSec = "infinity";
+            };
+            script = ''
+              for c in ${lib.escapeShellArgs registered}; do
+                if [ ! -e "/var/lib/machines/$c/current" ]; then
+                  echo "Container $c has no staged closure — bootstrapping..."
+                  systemctl start --wait "update-container@$c.service" || \
+                    echo "Bootstrap of $c failed; it will retry on the nightly timer." >&2
+                fi
+              done
+            '';
+          };
         };
+
+        timers."update-containers" = lib.mkIf (nightly != [ ]) {
+          description = "Nightly update of standalone NixOS containers";
+          wantedBy = [ "timers.target" ];
+          timerConfig = {
+            OnCalendar = "*-*-* 03:00:00";
+            Persistent = true;
+            RandomizedDelaySec = "30m";
+          };
+        };
+
+        tmpfiles.rules = [
+          "d /nix/var/nix/profiles/containers 0755 root root - -"
+          "d /nix/var/nix/gcroots/containers 0755 root root - -"
+          "d /run/container-updater 0755 root root - -"
+        ];
       };
 
-      timers."update-containers" = lib.mkIf (nightly != [ ]) {
-        description = "Nightly update of standalone NixOS containers";
-        wantedBy = [ "timers.target" ];
-        timerConfig = {
-          OnCalendar = "*-*-* 03:00:00";
-          Persistent = true;
-          RandomizedDelaySec = "30m";
-        };
-      };
-
-      tmpfiles.rules = [
-        "d /nix/var/nix/profiles/containers 0755 root root - -"
-        "d /run/container-updater 0755 root root - -"
-      ];
-    };
-
-    # Stage never-deployed containers during live switches before systemd starts
-    # container@<name>. Skipped during boot (before impermanence mounts /var/lib/machines).
-    system.activationScripts.container-updater-stage-missing = lib.mkIf (registered != [ ]) (
-      lib.stringAfter
-        [
-          "etc"
-          "var"
-        ]
-        ''
-          if [ -z "''${IN_NIXOS_SYSTEMD_STAGE1:-}" ] && [ -e /run/current-system ]; then
-            for c in ${lib.escapeShellArgs registered}; do
-              if [ ! -e "/var/lib/machines/$c/current" ]; then
-                echo "container-updater: $c has no staged closure yet — staging before activation continues..."
-                ${lib.getExe updaterCtl} stage --initial "$c" || \
-                  echo "container-updater: staging $c failed during activation; it will retry on the nightly timer or next boot." >&2
-              fi
-            done
-          fi
-        ''
-    );
-  };
+      # Stage never-deployed containers during live switches before systemd starts
+      # container@<name>. Skipped during boot (before impermanence mounts /var/lib/machines).
+      system.activationScripts.container-updater-stage-missing = lib.mkIf (registered != [ ]) (
+        lib.stringAfter
+          [
+            "etc"
+            "var"
+          ]
+          ''
+            if [ -z "''${IN_NIXOS_SYSTEMD_STAGE1:-}" ] && [ -e /run/current-system ]; then
+              for c in ${lib.escapeShellArgs registered}; do
+                if [ ! -e "/var/lib/machines/$c/current" ]; then
+                  echo "container-updater: $c has no staged closure yet — staging before activation continues..."
+                  ${lib.getExe updaterCtl} stage --initial "$c" || \
+                    echo "container-updater: staging $c failed during activation; it will retry on the nightly timer or next boot." >&2
+                fi
+              done
+            fi
+          ''
+      );
+    })
+  ];
 }

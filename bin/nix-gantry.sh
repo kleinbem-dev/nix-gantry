@@ -192,17 +192,21 @@ cmd_publish_manifest() {
   for name in "${names[@]}"; do
     path_attr="${flake_ref}#nixosConfigurations.${config}.config.containers.\"${name}\".path"
 
+    echo "Evaluating ${name}..." >&2
+    if ! store_path=$(nix eval --raw "${path_attr}"); then
+      echo "  ${name}: evaluation failed, skipping" >&2
+      continue
+    fi
+    if [[ ! "$store_path" =~ ^/nix/store/[a-z0-9]{32}-[^/]+$ ]]; then
+      echo "error: ${name}.path resolved to '${store_path}', not a /nix/store path (pass a factory nixosConfiguration, not a standalone host)" >&2
+      exit 1
+    fi
+
     echo "Building ${name}..." >&2
     nix build --no-link "${path_attr}" "${substituter_args[@]}" || {
       echo "  ${name}: build failed, skipping" >&2
       continue
     }
-
-    store_path=$(nix eval --raw "${path_attr}")
-    if [[ ! "$store_path" =~ ^/nix/store/[a-z0-9]{32}-[^/]+$ ]]; then
-      echo "error: ${name}.path resolved to '${store_path}', not a /nix/store path (pass a factory nixosConfiguration, not a standalone host)" >&2
-      exit 1
-    fi
 
     # Query remote caches directly; the local store already holds what we just built.
     if [ "${#substituters[@]}" -gt 0 ]; then

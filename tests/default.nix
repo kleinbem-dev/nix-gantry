@@ -306,18 +306,49 @@ in
       host.fail("nix-gantry activate demo")
       host.succeed(f"test $(readlink -f {profile}) = ${demoClosure}")
       host.wait_for_unit("container@demo.service")
-      host.succeed("systemctl reset-failed container@demo.service")
+
+      # Staging over a different closure roots `previous` under /nix/var/nix/gcroots/containers
+      # and cleans up its temporary `/run/container-updater/gcroot-demo` link.
+      host.succeed(f"nix-env --profile {profile} --set ${brokenClosure}")
+      host.succeed("nix-gantry stage demo")
+      host.succeed("test $(readlink -f /var/lib/machines/demo/previous) = ${brokenClosure}")
+      host.succeed("test $(readlink -f /nix/var/nix/gcroots/containers/demo-previous) = ${brokenClosure}")
+      host.fail("test -e /run/container-updater/gcroot-demo")
+
+      # `demo-previous` keeps an otherwise unreferenced store path alive across `nix-store --gc`,
+      # while activation reconciles stale `*-previous` roots for removed containers.
+      kept = host.succeed("echo kept > /tmp/kept && nix-store --add /tmp/kept").strip()
+      stale = host.succeed("echo stale > /tmp/stale && nix-store --add /tmp/stale").strip()
+      host.succeed(f"ln -sfn {kept} /nix/var/nix/gcroots/containers/demo-previous")
+      host.succeed(f"ln -sfn {stale} /nix/var/nix/gcroots/containers/removed-previous")
+      host.succeed("nix-store --gc >/dev/null")
+      host.succeed(f"test -e {kept} && test -e {stale}")
+      host.succeed("/run/current-system/activate")
+      host.fail("test -L /nix/var/nix/gcroots/containers/removed-previous")
+      host.succeed("nix-store --gc >/dev/null")
+      host.succeed(f"test -e {kept}")
+      host.fail(f"test -e {stale}")
 
       # Fallback rollback via `previous` symlink (when older profile generations were GC'd)
-      # must preserve the `/var/lib/machines/demo/current -> profile` invariant.
+      # must preserve `/var/lib/machines/demo/current -> profile` and recover even after
+      # `container@demo.service` hits its 5-starts-per-15m burst limit.
       host.succeed("ln -sfn ${demoClosure} /var/lib/machines/demo/previous")
+      host.succeed("ln -sfn ${demoClosure} /nix/var/nix/gcroots/containers/demo-previous")
       host.succeed(f"nix-env --profile {profile} --set ${brokenClosure}")
       host.succeed(f"nix-env --profile {profile} --delete-generations old")
+      for _ in range(5):
+          host.fail("systemctl restart container@demo.service")
       host.fail("nix-gantry activate demo")
       host.succeed(f"test $(readlink /var/lib/machines/demo/current) = {profile}")
       host.succeed(f"test $(readlink -f {profile}) = ${demoClosure}")
       host.wait_for_unit("container@demo.service")
-      host.succeed("systemctl reset-failed container@demo.service")
+
+      # Manual `nix-gantry rollback` also clears start-limit-hit before restarting.
+      host.succeed(f"nix-env --profile {profile} --set ${brokenClosure}")
+      for _ in range(5):
+          host.fail("systemctl restart container@demo.service")
+      host.succeed("nix-gantry rollback demo")
+      host.wait_for_unit("container@demo.service")
 
       # The guest journal is forwarded to the host, readable by the
       # systemd-journal group, and keeps every boot of the ephemeral root:
@@ -1512,13 +1543,14 @@ in
             case "$3" in
               *'"standalone"'*) echo "/var/lib/machines/standalone/current" ;;
               *'"good"'*) echo "/nix/store/00000000000000000000000000000001-good" ;;
+              *'"broken-build"'*) echo "/nix/store/00000000000000000000000000000004-broken" ;;
               *'"uncached"'*) echo "/nix/store/00000000000000000000000000000003-uncached" ;;
               *) exit 1 ;;
             esac
             ;;
           "build --no-link")
             case "$3" in
-              *'"broken-build"'*) exit 1 ;;
+              *'"standalone"'* | *'"broken-build"'*) exit 1 ;;
               *) exit 0 ;;
             esac
             ;;
