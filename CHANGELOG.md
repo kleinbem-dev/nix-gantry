@@ -5,7 +5,37 @@ See [README's Versioning section](README.md#versioning) for what
 
 ## Unreleased
 
+**Added:**
+- `packages.nix-gantry` (`packages.default`, `overlays.default`) and the
+  `nix-gantry` CLI (`publish-manifest`, `status`, `stage`, `activate`,
+  `update`, `rollback`, `--help`, `--version`), plus the `publish-manifest`
+  compatibility binary and `$out/share/nix-gantry/{lib,modules}`. Installed on
+  container hosts by `nixosModules.updater` (`services.nix-gantry.updater.package`).
+- Canonical NixOS module options under `services.nix-gantry.{host,updater}`,
+  with `lib.mkRenamedOptionModule` aliases from `my.container-host.*` and
+  `my.services.container-updater.*`.
+- `services.nix-gantry.updater.activateLast` (default `[ "attic" ]`),
+  `services.nix-gantry.host.persistPath` (default `"/nix/persist"`),
+  `tls.pkiDir` (default `"/nix/persist/pki/internal"`), and optional `cfg`
+  overrides for `nameservers`, `gateway`, and `enableAvahi` in `lib.mkContainer`.
+
 **Fixed:**
+- `nixosModules.host` and `egress.restrictLan` enable `networking.nftables` via
+  `mkDefault true`, so bridge forward rules and `zt-<name>-egress` LAN-drop
+  tables are enforced on stock NixOS hosts where `nftables` defaults to `false`.
+- Fallback rollbacks via `/var/lib/machines/<name>/previous` update the Nix
+  profile before swapping `current`, keeping `/var/lib/machines/<name>/current ->
+  /nix/var/nix/profiles/containers/<name>` intact across subsequent stages.
+- Initial container staging during live `nixos-rebuild switch` no longer leaves
+  `/run/container-updater/changed-<name>` behind to trigger a redundant restart
+  at the next nightly run.
+- `stage`, `activate`, and `rollback` serialize per container via `flock`,
+  validate container names and manifest `/nix/store/` paths, root substituted
+  closures with `--add-root` before setting the profile, and fail fast when
+  `activate` is called on an unstaged container.
+- `publish-manifest` drops the broken ambient `nix-fast-build` branch, rejects
+  standalone non-store `.path` configurations with a clear message, and checks
+  argument bounds under `set -u`.
 - `hostDataDir` and `subDirs` get their mode and owner only when tmpfiles
   creates them. Host activations no longer reset an existing dir to
   `dataDirOwner`/`dataDirGroup` (default 1000:100) under a guest service
@@ -15,6 +45,9 @@ See [README's Versioning section](README.md#versioning) for what
   factory's mode and owner instead of impermanence's root:root default.
 
 **Breaking:**
+- `lib.mkContainer` no longer sets `nixpkgs.config.allowUnfree = true` or
+  `allowInsecurePredicate` inside guest containers; pass those in `innerConfig`
+  or your own `mkContainer` wrapper where needed.
 - TLS containers no longer get the shared `client.crt`/`client.key` mounted.
   Upstreams present the container's own certificate since v0.3.0; a guest
   built from v0.2.0 or older needs a host on v0.3.0 until it is updated.
