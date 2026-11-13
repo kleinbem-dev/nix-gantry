@@ -578,12 +578,17 @@ in
           "var"
         ]
         ''
-          for c in ${lib.concatStringsSep " " registered}; do
-            if [ ! -e "/var/lib/machines/$c/current" ]; then
-              echo "container-updater: $c has no staged closure yet — staging before activation continues..."
-              ${stageScript} "$c" || echo "container-updater: staging $c failed during activation; it will retry on the nightly timer or next boot."
-            fi
-          done
+          # Only stage on live switches. During boot (initrd stage 1 or before
+          # impermanence mounts /nix/persist/var/lib/machines), skip staging:
+          # container-updater-bootstrap.service stages missing containers in userspace.
+          if [ -z "''${IN_NIXOS_SYSTEMD_STAGE1:-}" ] && [ -e /run/current-system ]; then
+            for c in ${lib.concatStringsSep " " registered}; do
+              if [ ! -e "/var/lib/machines/$c/current" ]; then
+                echo "container-updater: $c has no staged closure yet — staging before activation continues..."
+                ${stageScript} "$c" || echo "container-updater: staging $c failed during activation; it will retry on the nightly timer or next boot."
+              fi
+            done
+          fi
         ''
     );
   };
