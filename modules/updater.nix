@@ -394,24 +394,51 @@ let
       fi
     '';
 
-  renamedOptions = [
-    "enable"
-    "manifestUrl"
-    "containers"
-    "excludeFromNightly"
-    "activateLast"
-    "autoRollback"
-    "healthcheckTimeoutSec"
-    "healthchecks"
-  ];
+  # Legacy `my.services.container-updater.*` bridge. Avoids `mkRenamedOptionModule`
+  # because consumers (e.g. nix-config) may declare `options.my.services` via
+  # `types.submoduleWith`, where `getAttrFromPath` on top-level `options` aborts.
+  legacyOptionTypes = {
+    enable = lib.types.bool;
+    manifestUrl = lib.types.str;
+    containers = lib.types.listOf lib.types.str;
+    excludeFromNightly = lib.types.listOf lib.types.str;
+    activateLast = lib.types.listOf lib.types.str;
+    autoRollback = lib.types.bool;
+    healthcheckTimeoutSec = lib.types.ints.positive;
+    healthchecks = lib.types.attrsOf lib.types.str;
+  };
 in
 {
-  imports = map (
-    opt:
-    lib.mkRenamedOptionModule
-      [ "my" "services" "container-updater" opt ]
-      [ "services" "nix-gantry" "updater" opt ]
-  ) renamedOptions;
+  options.my.services.container-updater = lib.mkOption {
+    visible = false;
+    default = { };
+    type = lib.types.submodule (
+      { options, ... }:
+      {
+        options =
+          lib.mapAttrs (
+            name: optType:
+            lib.mkOption {
+              type = lib.types.nullOr optType;
+              default = null;
+              visible = false;
+              apply = v: if v == null then cfg.${name} else v;
+            }
+          ) legacyOptionTypes
+          // {
+            _legacyMeta = lib.mkOption {
+              type = lib.types.raw;
+              internal = true;
+              visible = false;
+              default = lib.mapAttrs (name: _: {
+                defined = builtins.any (d: d != null) options.${name}.definitions;
+                prio = options.${name}.highestPrio;
+              }) legacyOptionTypes;
+            };
+          };
+      }
+    );
+  };
 
   options.services.nix-gantry.updater = {
     enable = lib.mkEnableOption "automated container closures updater via Nix profiles";
@@ -495,6 +522,14 @@ in
 
   config = lib.mkMerge [
     {
+      services.nix-gantry.updater = lib.mapAttrs (
+        name: _:
+        let
+          meta = config.my.services.container-updater._legacyMeta.${name};
+        in
+        lib.mkIf meta.defined (lib.mkOverride meta.prio config.my.services.container-updater.${name})
+      ) legacyOptionTypes;
+
       # Drop stale `*-previous` GC roots when a container is removed or the updater disabled.
       system.activationScripts.container-updater-reconcile-gcroots = lib.stringAfter [
         "var"

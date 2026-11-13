@@ -1402,12 +1402,27 @@ in
 
   module-options =
     let
+      # Mirrors consumers (like kleinbem/nix-config) that declare `options.my.services`
+      # via `types.submoduleWith`, where `lib.mkRenamedOptionModule` would abort.
+      submoduleServicesShim =
+        { lib, ... }:
+        {
+          options.my.services = lib.mkOption {
+            type = lib.types.submoduleWith {
+              modules = [ ];
+              shorthandOnlyDefinesConfig = true;
+            };
+            default = { };
+          };
+        };
+
       legacyEval =
         (inputs.nixpkgs.lib.nixosSystem {
           inherit system;
           modules = [
             self.nixosModules.default
             shimModule
+            submoduleServicesShim
             (
               { config, ... }:
               lib.mkMerge [
@@ -1491,10 +1506,18 @@ in
           legacyEval.services.nix-gantry.host.enable
           && legacyEval.my.network.subnet == "10.233.7.0/24"
           && legacyEval.networking.nftables.enable
+          &&
+            legacyEval.my.services.container-updater.containers == [
+              "app"
+              "cache"
+              "manual"
+            ]
+          && legacyEval.my.services.container-updater.excludeFromNightly == [ "manual" ]
+          && legacyEval.services.nix-gantry.updater.activateLast == [ "cache" ]
         then
           ""
         else
-          throw "module-options: legacy my.container-host alias or nftables wiring failed"
+          throw "module-options: legacy my.container-host / my.services.container-updater bridge failed"
       }
       ${
         if
