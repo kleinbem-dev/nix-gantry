@@ -680,7 +680,7 @@ in
     let
       built = self.lib.mkContainer {
         config = {
-          my.services.container-updater.containers = [ ];
+          services.nix-gantry.updater.containers = [ ];
         };
         name = "demo-podman";
         cfg = {
@@ -723,7 +723,7 @@ in
     let
       built = self.lib.mkContainer {
         config = {
-          my.services.container-updater.containers = [ ];
+          services.nix-gantry.updater.containers = [ ];
         };
         name = "demo-egress";
         cfg = {
@@ -1402,61 +1402,26 @@ in
 
   module-options =
     let
-      # Mirrors consumers declaring `options.my.services` via `types.submoduleWith`.
-      # no-link: `mkRenamedOptionModule` resolves top-level option paths only by design.
-      submoduleServicesShim =
-        { lib, ... }:
-        {
-          options.my.services = lib.mkOption {
-            type = lib.types.submoduleWith {
-              modules = [ ];
-              shorthandOnlyDefinesConfig = true;
-            };
-            default = { };
-          };
-        };
-
-      legacyPriorityEval =
+      hostEval =
         (inputs.nixpkgs.lib.nixosSystem {
           inherit system;
           modules = [
             self.nixosModules.default
             shimModule
-            submoduleServicesShim
-            {
-              my.services.container-updater = {
-                enable = lib.mkDefault true;
-                manifestUrl = "https://example.invalid/manifest.json";
-                healthchecks.app = lib.mkDefault "legacy-hc";
-              };
-              services.nix-gantry.updater = {
-                enable = lib.mkForce false;
-                healthchecks.app = "canonical-hc";
-              };
-              system.stateVersion = "25.11";
-            }
-          ];
-        }).config;
-
-      legacyEval =
-        (inputs.nixpkgs.lib.nixosSystem {
-          inherit system;
-          modules = [
-            self.nixosModules.default
-            shimModule
-            submoduleServicesShim
             (
               { config, ... }:
               lib.mkMerge [
                 {
-                  my.container-host = {
-                    enable = true;
-                    subnet = "10.233.7.0/24";
-                    hostAddress = "10.233.7.1";
-                    manifestUrl = "https://example.invalid/manifest.json";
-                    excludeFromUpdater = [ "manual" ];
+                  services.nix-gantry = {
+                    host = {
+                      enable = true;
+                      subnet = "10.233.7.0/24";
+                      hostAddress = "10.233.7.1";
+                      manifestUrl = "https://example.invalid/manifest.json";
+                      excludeFromUpdater = [ "manual" ];
+                    };
+                    updater.activateLast = [ "cache" ];
                   };
-                  my.services.container-updater.activateLast = [ "cache" ];
                   system.stateVersion = "25.11";
                 }
                 (self.lib.mkContainer {
@@ -1520,30 +1485,26 @@ in
           ];
         }).config.containers.custom;
 
-      bulkScript = legacyEval.systemd.services.update-containers.script;
+      bulkScript = hostEval.systemd.services.update-containers.script;
     in
     pkgs.runCommandLocal "nix-gantry-module-options-check" { } ''
       ${
         if
-          legacyEval.services.nix-gantry.host.enable
-          && legacyEval.my.network.subnet == "10.233.7.0/24"
-          && legacyEval.networking.nftables.enable
+          hostEval.services.nix-gantry.host.enable
+          && hostEval.my.network.subnet == "10.233.7.0/24"
+          && hostEval.networking.nftables.enable
           &&
-            legacyEval.my.services.container-updater.containers == [
+            hostEval.services.nix-gantry.updater.containers == [
               "app"
               "cache"
               "manual"
             ]
-          && legacyEval.my.services.container-updater.excludeFromNightly == [ "manual" ]
-          && legacyEval.services.nix-gantry.updater.activateLast == [ "cache" ]
-          && !legacyPriorityEval.services.nix-gantry.updater.enable
-          && !legacyPriorityEval.my.services.container-updater.enable
-          && legacyPriorityEval.services.nix-gantry.updater.healthchecks.app == "canonical-hc"
-          && legacyPriorityEval.my.services.container-updater.healthchecks.app == "canonical-hc"
+          && hostEval.services.nix-gantry.updater.excludeFromNightly == [ "manual" ]
+          && hostEval.services.nix-gantry.updater.activateLast == [ "cache" ]
         then
           ""
         else
-          throw "module-options: legacy my.container-host / my.services.container-updater bridge failed"
+          throw "module-options: services.nix-gantry.host / updater wiring failed"
       }
       ${
         if
