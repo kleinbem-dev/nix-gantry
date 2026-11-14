@@ -27,9 +27,7 @@ nix build .#checks.x86_64-linux.happy-path --no-link -L
 ## Module option conventions
 
 Canonical module options live under `services.nix-gantry.{host,updater}`,
-defaulting to `enable = false`. Legacy `my.container-host.*` and
-`my.services.container-updater.*` paths are aliased via
-`lib.mkRenamedOptionModule` for backwards compatibility.
+defaulting to `enable = false`.
 
 ## Options reference
 

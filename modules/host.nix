@@ -9,50 +9,8 @@
 }:
 let
   cfg = config.services.nix-gantry.host;
-  renamedPaths = [
-    [ "enable" ]
-    [ "subnet" ]
-    [ "hostAddress" ]
-    [ "manifestUrl" ]
-    [ "bridge" ]
-    [ "excludeFromUpdater" ]
-    [ "excludeFromStandalone" ]
-    [
-      "journal"
-      "forward"
-    ]
-    [
-      "journal"
-      "maxUse"
-    ]
-    [
-      "journal"
-      "maxUseFor"
-    ]
-    [ "enablePersistence" ]
-  ];
 in
 {
-  imports = map (
-    path:
-    lib.mkRenamedOptionModule
-      (
-        [
-          "my"
-          "container-host"
-        ]
-        ++ path
-      )
-      (
-        [
-          "services"
-          "nix-gantry"
-          "host"
-        ]
-        ++ path
-      )
-  ) renamedPaths;
-
   options.services.nix-gantry.host = {
     enable = lib.mkEnableOption "container host bridge networking and updater wiring";
 

@@ -106,7 +106,7 @@ let
   # Ephemeral roots lose the guest journal on restart and nixpkgs skips
   # --link-journal for them, so stream it to the host instead (systemd >= 261).
   # no-link: by design, an ephemeral root has no journal directory to link.
-  journalCfg = config.services.nix-gantry.host.journal or config.my.container-host.journal or { };
+  journalCfg = config.services.nix-gantry.host.journal or { };
   forwardJournal =
     journalCfg.forward or (lib.versionAtLeast (config.systemd.package.version or "0") "261");
   journalDir = "/var/log/containers/${name}";
@@ -119,9 +119,7 @@ let
       toString (cfg.dataDirGroup or 100)
     } - -";
 
-  updaterList =
-    config.services.nix-gantry.updater.containers or config.my.services.container-updater.containers
-      or [ ];
+  updaterList = config.services.nix-gantry.updater.containers or [ ];
   isStandalone =
     builtins.elem name updaterList
     || (cfg.standaloneRunner or config.my.containers.standaloneRunner or false);

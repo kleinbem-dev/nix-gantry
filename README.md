@@ -87,9 +87,7 @@ build-vm` with no external infrastructure required.
 ## Options reference
 
 [`docs/OPTIONS.md`](docs/OPTIONS.md) — every `services.nix-gantry.host.*` and
-`services.nix-gantry.updater.*` option, generated from source. Legacy
-`my.container-host.*` and `my.services.container-updater.*` paths remain wired
-via `lib.mkRenamedOptionModule`.
+`services.nix-gantry.updater.*` option, generated from source.
 
 ## External requirements
 
