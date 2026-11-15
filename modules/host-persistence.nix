@@ -7,7 +7,7 @@
 }:
 let
   cfg = config.services.nix-gantry.host;
-  containersAttr = config.services.nix-gantry.containers or config.my.containers or { };
+  containersAttr = (config.my.containers or { }) // (config.services.nix-gantry.containers or { });
 in
 {
   config = lib.mkIf (cfg.enable && cfg.enablePersistence) {

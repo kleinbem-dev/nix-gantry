@@ -31,7 +31,7 @@ EOF
 }
 
 validate_container() {
-  if [[ -z "${1:-}" || ! "$1" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  if [[ -z "${1:-}" || ! "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
     echo "nix-gantry: invalid container name '${1:-}'" >&2
     exit 1
   fi
@@ -296,11 +296,11 @@ cmd_status() {
     fi
     cur=""
     if [ -e "${root}/var/lib/machines/${c}/current" ]; then
-      cur=$(readlink -f -- "${root}/var/lib/machines/${c}/current")
+      cur=$(readlink -f -- "${root}/var/lib/machines/${c}/current" || true)
     fi
     prev=""
     if [ -e "${root}/var/lib/machines/${c}/previous" ]; then
-      prev=$(readlink -f -- "${root}/var/lib/machines/${c}/previous")
+      prev=$(readlink -f -- "${root}/var/lib/machines/${c}/previous" || true)
     fi
     pending="false"
     if [ -e "${root}/run/container-updater/changed-${c}" ]; then
@@ -331,20 +331,30 @@ cmd_status() {
     return 0
   fi
 
-  printf '%-20s %-12s %-9s %s\n' "CONTAINER" "STATE" "PENDING" "CURRENT"
-  jq -r '.[] | [
-    .name,
-    .state,
-    (if .pendingRestart then "yes" else "no" end),
-    (.current // "-")
-  ] | @tsv' <<<"$items" | while IFS=$'\t' read -r c state pending cur; do
-    printf '%-20s %-12s %-9s %s\n' "$c" "$state" "$pending" "$cur"
-  done
+  local table
+  table=$(
+    printf '%-20s %-12s %-9s %s\n' "CONTAINER" "STATE" "PENDING" "CURRENT"
+    jq -r '.[] | [
+      .name,
+      .state,
+      (if .pendingRestart then "yes" else "no" end),
+      (.current // "-")
+    ] | @tsv' <<<"$items" | while IFS=$'\t' read -r c state pending cur; do
+      printf '%-20s %-12s %-9s %s\n' "$c" "$state" "$pending" "$cur"
+    done
+  )
+  # Emit in one buffered write(2) (no-link: bash builtin printf line-buffers stdout,
+  # which races early-closing readers like `| grep -q` under pipefail).
+  cat <<<"$table"
 }
 
 cmd_unit_action() {
   local action=$1 unit_prefix=$2
   shift 2
+  if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+    echo "Usage: nix-gantry ${action} <container...>"
+    return 0
+  fi
   if [ $# -eq 0 ]; then
     echo "Usage: nix-gantry ${action} <container...>" >&2
     exit 1
@@ -383,6 +393,10 @@ case "${1:-}" in
     ;;
   update)
     shift
+    if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+      echo "Usage: nix-gantry update [container...]"
+      exit 0
+    fi
     if [ $# -eq 0 ]; then
       systemctl start --wait update-containers.service
     else
@@ -391,6 +405,10 @@ case "${1:-}" in
     ;;
   rollback)
     shift
+    if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+      echo "Usage: nix-gantry rollback <container>"
+      exit 0
+    fi
     if [ $# -ne 1 ]; then
       echo "Usage: nix-gantry rollback <container>" >&2
       exit 1

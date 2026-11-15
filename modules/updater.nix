@@ -125,7 +125,7 @@ let
     ];
     text = ''
       validate_container() {
-        if [[ -z "$1" || ! "$1" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        if [[ -z "$1" || ! "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
           echo "nix-gantry: invalid container name '$1'" >&2
           exit 1
         fi
