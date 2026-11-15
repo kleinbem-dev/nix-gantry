@@ -469,18 +469,29 @@ in
             assert len(boots) == len(set(boots)), f"duplicate probe lines: {boots}"
             return len(boots)
 
+        def guest_boot_id():
+            return (
+                host.succeed("nixos-container run demo -- cat /proc/sys/kernel/random/boot_id")
+                .strip()
+                .replace("-", "")
+            )
+
+        cur_boot = guest_boot_id()
         host.wait_until_succeeds(
-            "runuser -u reader -- journalctl -D /var/log/containers/demo"
-            " MESSAGE=gantry-journal-probe -q --no-pager | grep -q .",
+            f"runuser -u reader -- journalctl -D /var/log/containers/demo"
+            f" MESSAGE=gantry-journal-probe _BOOT_ID={cur_boot} -q --no-pager | grep -q .",
             timeout=timedelta(seconds=120),
         )
         before = probe_boots()
         host.succeed("machinectl stop demo")
         host.wait_until_fails("systemctl is-active container@demo.service")
         host.succeed("systemctl start container@demo.service")
+        host.wait_for_unit("container@demo.service")
+        new_boot = guest_boot_id()
+        assert new_boot != cur_boot, f"guest boot ID did not change: {new_boot}"
         host.wait_until_succeeds(
-            f"test $(runuser -u reader -- journalctl -D /var/log/containers/demo"
-            f" MESSAGE=gantry-journal-probe -q --no-pager | wc -l) -gt {before}",
+            f"runuser -u reader -- journalctl -D /var/log/containers/demo"
+            f" MESSAGE=gantry-journal-probe _BOOT_ID={new_boot} -q --no-pager | grep -q .",
             timeout=timedelta(seconds=120),
         )
         assert probe_boots() == before + 1
@@ -1082,7 +1093,8 @@ in
           " && systemd-run --unit=lan-http443 ip netns exec lanpeer ${pkgs.python3}/bin/python3 -m http.server 443 --directory /tmp/lan-srv"
       )
       host.wait_until_succeeds(
-          "curl -fsS --max-time 2 http://192.168.99.3/ | grep -q lan-says-hi",
+          "curl -fsS --max-time 2 http://192.168.99.3/ | grep -q lan-says-hi"
+          " && curl -fsS --max-time 2 http://198.51.100.3:443/ | grep -q lan-says-hi",
           timeout=timedelta(seconds=15),
       )
 
@@ -1603,7 +1615,9 @@ in
             // args
           )).assertions;
       inputGuardsWork =
-        mkFail {
+        mkFail { name = "_db"; }
+        && mkFail { name = "-flag"; }
+        && mkFail {
           cfg = {
             hostBridge = "cbr0";
           };
@@ -1804,9 +1818,27 @@ in
           ];
         }).config.containers.custom;
 
+      badContainerNameFails =
+        builtins.any (a: !a.assertion)
+          (inputs.nixpkgs.lib.nixosSystem {
+            inherit system;
+            modules = [
+              self.nixosModules.updater
+              {
+                services.nix-gantry.updater = {
+                  enable = true;
+                  manifestUrl = "https://example.invalid/manifest.json";
+                  containers = [ "_db" ];
+                };
+                system.stateVersion = "25.11";
+              }
+            ];
+          }).config.assertions;
+
       bulkScript = hostEval.systemd.services.update-containers.script;
     in
     pkgs.runCommandLocal "nix-gantry-module-options-check" { } ''
+      ${if badContainerNameFails then "" else throw "module-options: _db container name was not rejected"}
       ${
         if
           hostEval.services.nix-gantry.host.enable

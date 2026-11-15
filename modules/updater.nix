@@ -421,7 +421,7 @@ in
         "caddy"
         "gatus"
       ];
-      description = "Standalone containers managed by the updater.";
+      description = "Standalone containers managed by the updater (names must match `[a-zA-Z0-9][a-zA-Z0-9_-]*`).";
     };
     excludeFromNightly = lib.mkOption {
       type = lib.types.listOf lib.types.str;
@@ -483,6 +483,13 @@ in
       ] reconcilePreviousRoots;
     }
     (lib.mkIf cfg.enable {
+      assertions = [
+        {
+          assertion = builtins.all (c: builtins.match "[a-zA-Z0-9][a-zA-Z0-9_-]*" c != null) cfg.containers;
+          message = "services.nix-gantry.updater.containers entries must match [a-zA-Z0-9][a-zA-Z0-9_-]*";
+        }
+      ];
+
       environment.systemPackages = lib.optional (cfg.package != null) cfg.package;
 
       systemd = {
