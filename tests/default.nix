@@ -1,23 +1,23 @@
 # Tests for lib.mkContainer + nixosModules.updater/.host/.host-persistence + CLI:
-#   happy-path            VM: manifest fetch -> realise -> symlink swap -> start,
-#                         on a real factory-built closure; rollback without a
-#                         previous generation fails; a closure that doesn't start
-#                         is rolled back; the container journal reaches the host,
-#                         readable without root, across restarts, and the guest
-#                         still gets cgroup controllers (pids for podman).
+#   happy-path            VM: first-boot bootstrap (including excludeFromUpdater),
+#                         live-switch `stage --initial` & Stage 1 guards, 3-phase
+#                         bulk `nix-gantry update` (`activateLast` ordering,
+#                         `needs_activation`, `excludeFromUpdater`), rollback
+#                         guards/fallbacks, GC-root reconciliation, forwarded
+#                         journal across restarts, and cgroup v2 delegation.
 #   health-rollback       VM: a closure that boots but fails its healthcheck (or
-#                         hangs past budget) is rolled back to the healthy one.
-#   bad-manifest          VM: unfetchable, malformed-JSON, and missing-entry
-#                         manifests fail staging, keep the container stopped, and
-#                         fail the nightly bulk unit.
+#                         hangs past budget) rolls back; `autoRollback = false`
+#                         leaves the failed closure in place.
+#   bad-manifest          VM: unstaged activate, unfetchable/malformed/missing/
+#                         traversal manifests fail staging and the bulk unit.
 #   podman-run            VM: podman inside a usesPodman container, with journal
 #                         forwarding on, loads a Nix-built image and runs it.
 #   datadir-ownership     VM: hostDataDir and subDirs are created with the
 #                         configured owner, and a host tmpfiles run leaves the
 #                         owner/mode a guest service gave them alone.
-#   tls-mtls              VM: one container calls another over mTLS with its own
-#                         cert; the listener refuses no cert and a foreign CA's,
-#                         and answers 403 to a name not in tls.allowedClients.
+#   tls-mtls              VM: end-to-end mTLS (`allowedClients` 403, missing/
+#                         foreign cert rejection), routed `egress.lanAllowlist`
+#                         pass vs RFC1918 drop, and `tls.airlock` enforcement.
 #   quickstart-eval       eval: examples/flake.nix quickstart VM evaluates cleanly.
 #   podman-nesting        eval: usesPodman wires storage mount, CAP_BPF, /dev/fuse.
 #   egress-replies        eval: egress replies are accepted before the LAN drop.
@@ -26,13 +26,14 @@
 #   updater-timeouts      eval: systemd duration parser, sub-second rounding,
 #                         unbounded limits, and invalid timeout rejection.
 #   host-persistence      eval: onTmpfs longest-mount-prefix matching, owner/mode
-#                         forwarding, disabled-container filtering, journal dir.
-#   option-helpers        eval: tlsOptions, oidcOptions, egressOptions, TLS port
-#                         assertions, mkContainer input assertions, hardware/limits.
-#   module-options        eval: legacy my.* -> services.nix-gantry.* aliases,
+#                         forwarding, custom persistPath, both container namespaces.
+#   option-helpers        eval: tls/oidc/egress helpers, string healthCheck,
+#                         function innerConfig, nesting/caps/devices/privateUsers,
+#                         and TLS/mkContainer assertion guards.
+#   module-options        eval: services.nix-gantry.{host,updater} wiring,
 #                         activateLast partitioning, pkiDir/DNS/avahi/unfree hygiene.
-#   publish-manifest-cli  sandbox check: nix-gantry CLI (--version/--help/status) +
-#                         publish-manifest mock-store union, sigs, and failure modes.
+#   publish-manifest-cli  sandbox check: nix-gantry CLI subcommands/validation/
+#                         discovery + publish-manifest union, per-path sigs, errors.
 #   options-doc-freshness check: docs/OPTIONS.md matches packages.options-doc.
 {
   pkgs,
@@ -110,6 +111,11 @@ let
       ];
     }).config.containers.demo.path;
   demoClosure = mkDemoClosure demoInnerConfig;
+  demoClosureV2 = mkDemoClosure (
+    lib.recursiveUpdate demoInnerConfig {
+      environment.etc."gantry-gen".text = "v2";
+    }
+  );
   # Boots fine, but without health-marker its healthcheck never passes.
   unhealthyClosure = mkDemoClosure (
     lib.recursiveUpdate demoInnerConfig { systemd.services.health-marker.enable = false; }
@@ -265,132 +271,273 @@ let
     };
 in
 {
-  happy-path = pkgs.testers.runNixOSTest {
-    name = "nix-gantry-happy-path";
-    nodes.host = mkHostNode { manifestUrl = "file://${manifestFile}"; };
-    testScript = ''
-      import json
-      from datetime import timedelta
-
-      start_all()
-      host.wait_for_unit("multi-user.target")
-
-      # Host CLI installed by nixosModules.updater: stage+activate via `nix-gantry update`.
-      host.succeed("nix-gantry --version")
-      host.succeed("nix-gantry update demo")
-      host.succeed("test -L /var/lib/machines/demo/current")
-      host.wait_for_unit("container@demo.service")
-      host.succeed("machinectl status demo")
-
-      status = json.loads(host.succeed("nix-gantry status --json demo"))
-      assert len(status) == 1 and status[0]["name"] == "demo", status
-      assert status[0]["state"] == "active" and status[0]["pendingRestart"] is False, status
-      assert status[0]["current"] == "${demoClosure}", status
-      host.succeed("nix-gantry status | grep -q '^demo '")
-
-      # Re-running against an unchanged manifest is a no-op stage (same
-      # store path) that still completes without error.
-      host.succeed("nix-gantry update demo")
-
-      # One generation, no `previous`: rollback must fail and leave demo running.
-      host.fail("nix-gantry rollback demo")
-      host.succeed("systemctl is-active container@demo.service")
-      # Nor may it "roll back" to a previous link that is the current closure.
-      host.succeed("ln -sfn ${demoClosure} /var/lib/machines/demo/previous")
-      host.fail("nix-gantry rollback demo")
-      host.succeed("rm /var/lib/machines/demo/previous")
-
-      # A closure that fails to start is rolled back via Nix profile generation.
-      profile = "/nix/var/nix/profiles/containers/demo"
-      host.succeed(f"nix-env --profile {profile} --set ${brokenClosure}")
-      host.fail("nix-gantry activate demo")
-      host.succeed(f"test $(readlink -f {profile}) = ${demoClosure}")
-      host.wait_for_unit("container@demo.service")
-
-      # Staging over a different closure roots `previous` under /nix/var/nix/gcroots/containers
-      # and cleans up its temporary `/run/container-updater/gcroot-demo` link.
-      host.succeed(f"nix-env --profile {profile} --set ${brokenClosure}")
-      host.succeed("nix-gantry stage demo")
-      host.succeed("test $(readlink -f /var/lib/machines/demo/previous) = ${brokenClosure}")
-      host.succeed("test $(readlink -f /nix/var/nix/gcroots/containers/demo-previous) = ${brokenClosure}")
-      host.fail("test -e /run/container-updater/gcroot-demo")
-
-      # `demo-previous` keeps an otherwise unreferenced store path alive across `nix-store --gc`,
-      # while activation reconciles stale `*-previous` roots for removed containers.
-      kept = host.succeed("echo kept > /tmp/kept && nix-store --add /tmp/kept").strip()
-      stale = host.succeed("echo stale > /tmp/stale && nix-store --add /tmp/stale").strip()
-      host.succeed(f"ln -sfn {kept} /nix/var/nix/gcroots/containers/demo-previous")
-      host.succeed(f"ln -sfn {stale} /nix/var/nix/gcroots/containers/removed-previous")
-      host.succeed("nix-store --gc >/dev/null")
-      host.succeed(f"test -e {kept} && test -e {stale}")
-      host.succeed("/run/current-system/activate")
-      host.fail("test -L /nix/var/nix/gcroots/containers/removed-previous")
-      host.succeed("nix-store --gc >/dev/null")
-      host.succeed(f"test -e {kept}")
-      host.fail(f"test -e {stale}")
-
-      # Fallback rollback via `previous` symlink (when older profile generations were GC'd)
-      # must preserve `/var/lib/machines/demo/current -> profile` and recover even after
-      # `container@demo.service` hits its 5-starts-per-15m burst limit.
-      host.succeed("ln -sfn ${demoClosure} /var/lib/machines/demo/previous")
-      host.succeed("ln -sfn ${demoClosure} /nix/var/nix/gcroots/containers/demo-previous")
-      host.succeed(f"nix-env --profile {profile} --set ${brokenClosure}")
-      host.succeed(f"nix-env --profile {profile} --delete-generations old")
-      for _ in range(5):
-          host.fail("systemctl restart container@demo.service")
-      host.fail("nix-gantry activate demo")
-      host.succeed(f"test $(readlink /var/lib/machines/demo/current) = {profile}")
-      host.succeed(f"test $(readlink -f {profile}) = ${demoClosure}")
-      host.wait_for_unit("container@demo.service")
-
-      # Manual `nix-gantry rollback` also clears start-limit-hit before restarting.
-      host.succeed(f"nix-env --profile {profile} --set ${brokenClosure}")
-      for _ in range(5):
-          host.fail("systemctl restart container@demo.service")
-      host.succeed("nix-gantry rollback demo")
-      host.wait_for_unit("container@demo.service")
-
-      # The guest journal is forwarded to the host, readable by the
-      # systemd-journal group, and keeps every boot of the ephemeral root:
-      # one probe line per container boot, none lost or duplicated.
-
-      def probe_boots():
-          out = host.succeed(
-              "runuser -u reader -- journalctl -D /var/log/containers/demo"
-              " MESSAGE=gantry-journal-probe -o json --no-pager"
+  happy-path =
+    let
+      bootManifest = pkgs.writeText "boot-manifest.json" (
+        builtins.toJSON {
+          rev = "boot-v1";
+          generated = "1970-01-01T00:00:00Z";
+          systems.${system} = {
+            demo = "${demoClosure}";
+            manual = "${demoClosure}";
+            # Omit `cache` at boot so bootstrap tolerates its failure and live-switch
+            # `stage --initial` can be exercised on an unstaged container afterwards.
+          };
+        }
+      );
+      manifestV1 = pkgs.writeText "manifest-v1.json" (
+        builtins.toJSON {
+          rev = "v1";
+          generated = "1970-01-01T00:00:00Z";
+          systems.${system} = {
+            demo = "${demoClosure}";
+            cache = "${demoClosure}";
+            manual = "${demoClosure}";
+          };
+        }
+      );
+      manifestV2 = pkgs.writeText "manifest-v2.json" (
+        builtins.toJSON {
+          rev = "v2";
+          generated = "1970-01-01T00:00:00Z";
+          systems.${system} = {
+            demo = "${demoClosureV2}";
+            cache = "${demoClosureV2}";
+            manual = "${demoClosureV2}";
+          };
+        }
+      );
+    in
+    pkgs.testers.runNixOSTest {
+      name = "nix-gantry-happy-path";
+      nodes.host = {
+        imports = [
+          (mkHostNode { manifestUrl = "file:///run/gantry-manifest.json"; })
+          (
+            { config, ... }:
+            self.lib.mkContainer {
+              inherit config;
+              name = "cache";
+              cfg = demoCfg // {
+                ip = "10.233.1.3/24";
+              };
+              innerConfig = demoInnerConfig;
+            }
           )
-          boots = [json.loads(l)["_BOOT_ID"] for l in out.splitlines() if l]
-          assert len(boots) == len(set(boots)), f"duplicate probe lines: {boots}"
-          return len(boots)
+          (
+            { config, ... }:
+            self.lib.mkContainer {
+              inherit config;
+              name = "manual";
+              cfg = demoCfg // {
+                ip = "10.233.1.4/24";
+              };
+              innerConfig = demoInnerConfig;
+            }
+          )
+        ];
+        services.nix-gantry = {
+          host.excludeFromUpdater = [ "manual" ];
+          updater = {
+            containers = lib.mkForce [
+              "demo"
+              "cache"
+              "manual"
+            ];
+            activateLast = [ "cache" ];
+          };
+        };
+        systemd.tmpfiles.rules = [ "L+ /run/gantry-manifest.json - - - - ${bootManifest}" ];
+        system.extraDependencies = [
+          demoClosure
+          demoClosureV2
+          manifestV1
+          manifestV2
+        ];
+      };
+      testScript = ''
+        import json
+        from datetime import timedelta
 
-      host.wait_until_succeeds(
-          "runuser -u reader -- journalctl -D /var/log/containers/demo"
-          " MESSAGE=gantry-journal-probe -q --no-pager | grep -q .",
-          timeout=timedelta(seconds=120),
-      )
-      before = probe_boots()
-      host.succeed("machinectl stop demo")
-      host.wait_until_fails("systemctl is-active container@demo.service")
-      host.succeed("systemctl start container@demo.service")
-      host.wait_until_succeeds(
-          f"test $(runuser -u reader -- journalctl -D /var/log/containers/demo"
-          f" MESSAGE=gantry-journal-probe -q --no-pager | wc -l) -gt {before}",
-          timeout=timedelta(seconds=120),
-      )
-      assert probe_boots() == before + 1
+        start_all()
+        host.wait_for_unit("multi-user.target")
 
-      # With forwarding on, the guest still gets cgroup controllers delegated:
-      # podman/crun inside need pids. journal-remote must not sit in the
-      # unit's top cgroup, or nspawn can't enable them for payload/.
-      cg = "/sys/fs/cgroup/machine.slice/container@demo.service"
-      host.succeed(f"test -z \"$(cat {cg}/cgroup.procs)\"")
-      host.succeed(f"grep -qw pids {cg}/payload/cgroup.controllers")
-      host.succeed(f"grep -qw memory {cg}/payload/cgroup.controllers")
+        # 1. First-boot `container-updater-bootstrap.service` stages and starts both
+        # nightly (`demo`) and `excludeFromUpdater` (`manual`) containers automatically,
+        # while tolerating `cache` missing from the boot manifest.
+        host.succeed("test $(systemctl show -P Result container-updater-bootstrap.service) = success")
+        host.wait_for_unit("container@demo.service")
+        host.wait_for_unit("container@manual.service")
+        host.succeed("machinectl status demo")
+        host.succeed("machinectl status manual")
+        host.fail("test -e /var/lib/machines/cache/current")
 
-      # journal.maxUseFor overrides the default cap for this one container.
-      host.succeed("grep -q -- '--forward-journal-max-use=64M' /etc/nixos-containers/demo.conf")
-    '';
-  };
+        # 2. `container-updater-stage-missing` skips Stage 1 / pre-userspace boot, then
+        # stages `cache` via `stage --initial` during live activate without setting `changed-cache`.
+        host.succeed("ln -sfn ${manifestV1} /run/gantry-manifest.json")
+        host.succeed("IN_NIXOS_SYSTEMD_STAGE1=1 /run/current-system/activate")
+        host.fail("test -e /var/lib/machines/cache/current")
+        host.succeed("sys=$(readlink -f /run/current-system) && rm /run/current-system && \"$sys/activate\"")
+        host.succeed("test -L /run/current-system")
+        host.fail("test -e /var/lib/machines/cache/current")
+        host.succeed("/run/current-system/activate")
+        host.succeed("test $(readlink -f /var/lib/machines/cache/current) = ${demoClosure}")
+        host.fail("test -e /run/container-updater/changed-cache")
+        host.succeed("systemctl start container@cache.service")
+        host.wait_for_unit("container@cache.service")
+
+        # Host CLI installed by nixosModules.updater: stage+activate via `nix-gantry update`.
+        host.succeed("nix-gantry --version")
+        status = json.loads(host.succeed("nix-gantry status --json demo"))
+        assert len(status) == 1 and status[0]["name"] == "demo", status
+        assert status[0]["state"] == "active" and status[0]["pendingRestart"] is False, status
+        assert status[0]["current"] == "${demoClosure}", status
+        host.succeed("nix-gantry status | grep -q '^demo '")
+
+        # Re-running against an unchanged manifest is a no-op stage (same
+        # store path) that still completes without error.
+        host.succeed("nix-gantry update demo")
+
+        # One generation, no `previous`: rollback must fail and leave demo running.
+        host.fail("nix-gantry rollback demo")
+        host.succeed("systemctl is-active container@demo.service")
+        # Nor may it "roll back" to a previous link that is the current closure.
+        host.succeed("ln -sfn ${demoClosure} /var/lib/machines/demo/previous")
+        host.fail("nix-gantry rollback demo")
+        host.succeed("rm /var/lib/machines/demo/previous")
+
+        # A closure that fails to start is rolled back via Nix profile generation.
+        profile = "/nix/var/nix/profiles/containers/demo"
+        host.succeed(f"nix-env --profile {profile} --set ${brokenClosure}")
+        host.fail("nix-gantry activate demo")
+        host.succeed(f"test $(readlink -f {profile}) = ${demoClosure}")
+        host.wait_for_unit("container@demo.service")
+
+        # Staging over a different closure roots `previous` under /nix/var/nix/gcroots/containers
+        # and cleans up its temporary `/run/container-updater/gcroot-demo` link.
+        host.succeed(f"nix-env --profile {profile} --set ${brokenClosure}")
+        host.succeed("nix-gantry stage demo")
+        host.succeed("test $(readlink -f /var/lib/machines/demo/previous) = ${brokenClosure}")
+        host.succeed("test $(readlink -f /nix/var/nix/gcroots/containers/demo-previous) = ${brokenClosure}")
+        host.fail("test -e /run/container-updater/gcroot-demo")
+
+        # `demo-previous` keeps an otherwise unreferenced store path alive across `nix-store --gc`,
+        # while activation reconciles stale `*-previous` roots for removed containers.
+        kept = host.succeed("echo kept > /tmp/kept && nix-store --add /tmp/kept").strip()
+        stale = host.succeed("echo stale > /tmp/stale && nix-store --add /tmp/stale").strip()
+        host.succeed(f"ln -sfn {kept} /nix/var/nix/gcroots/containers/demo-previous")
+        host.succeed(f"ln -sfn {stale} /nix/var/nix/gcroots/containers/removed-previous")
+        host.succeed("nix-store --gc >/dev/null")
+        host.succeed(f"test -e {kept} && test -e {stale}")
+        host.succeed("/run/current-system/activate")
+        host.fail("test -L /nix/var/nix/gcroots/containers/removed-previous")
+        host.succeed("nix-store --gc >/dev/null")
+        host.succeed(f"test -e {kept}")
+        host.fail(f"test -e {stale}")
+
+        # Fallback rollback via `previous` symlink (when older profile generations were GC'd)
+        # must preserve `/var/lib/machines/demo/current -> profile` and recover even after
+        # `container@demo.service` hits its 5-starts-per-15m burst limit.
+        host.succeed("ln -sfn ${demoClosure} /var/lib/machines/demo/previous")
+        host.succeed("ln -sfn ${demoClosure} /nix/var/nix/gcroots/containers/demo-previous")
+        host.succeed(f"nix-env --profile {profile} --set ${brokenClosure}")
+        host.succeed(f"nix-env --profile {profile} --delete-generations old")
+        for _ in range(5):
+            host.fail("systemctl restart container@demo.service")
+        host.fail("nix-gantry activate demo")
+        host.succeed(f"test $(readlink /var/lib/machines/demo/current) = {profile}")
+        host.succeed(f"test $(readlink -f {profile}) = ${demoClosure}")
+        host.wait_for_unit("container@demo.service")
+
+        # Manual `nix-gantry rollback` also clears start-limit-hit before restarting.
+        host.succeed(f"nix-env --profile {profile} --set ${brokenClosure}")
+        for _ in range(5):
+            host.fail("systemctl restart container@demo.service")
+        host.succeed("nix-gantry rollback demo")
+        host.wait_for_unit("container@demo.service")
+
+        # The guest journal is forwarded to the host, readable by the
+        # systemd-journal group, and keeps every boot of the ephemeral root:
+        # one probe line per container boot, none lost or duplicated.
+
+        def probe_boots():
+            out = host.succeed(
+                "runuser -u reader -- journalctl -D /var/log/containers/demo"
+                " MESSAGE=gantry-journal-probe -o json --no-pager"
+            )
+            boots = [json.loads(l)["_BOOT_ID"] for l in out.splitlines() if l]
+            assert len(boots) == len(set(boots)), f"duplicate probe lines: {boots}"
+            return len(boots)
+
+        def guest_boot_id():
+            return (
+                host.succeed("nixos-container run demo -- cat /proc/sys/kernel/random/boot_id")
+                .strip()
+                .replace("-", "")
+            )
+
+        cur_boot = guest_boot_id()
+        host.wait_until_succeeds(
+            f"runuser -u reader -- journalctl -D /var/log/containers/demo"
+            f" MESSAGE=gantry-journal-probe _BOOT_ID={cur_boot} -q --no-pager | grep -q .",
+            timeout=timedelta(seconds=120),
+        )
+        before = probe_boots()
+        host.succeed("machinectl stop demo")
+        host.wait_until_fails("systemctl is-active container@demo.service")
+        host.succeed("systemctl start container@demo.service")
+        host.wait_for_unit("container@demo.service")
+        new_boot = guest_boot_id()
+        assert new_boot != cur_boot, f"guest boot ID did not change: {new_boot}"
+        host.wait_until_succeeds(
+            f"runuser -u reader -- journalctl -D /var/log/containers/demo"
+            f" MESSAGE=gantry-journal-probe _BOOT_ID={new_boot} -q --no-pager | grep -q .",
+            timeout=timedelta(seconds=120),
+        )
+        assert probe_boots() == before + 1
+
+        # With forwarding on, the guest still gets cgroup controllers delegated:
+        # podman/crun inside need pids. journal-remote must not sit in the
+        # unit's top cgroup, or nspawn can't enable them for payload/.
+        cg = "/sys/fs/cgroup/machine.slice/container@demo.service"
+        host.succeed(f"test -z \"$(cat {cg}/cgroup.procs)\"")
+        host.succeed(f"grep -qw pids {cg}/payload/cgroup.controllers")
+        host.succeed(f"grep -qw memory {cg}/payload/cgroup.controllers")
+
+        # journal.maxUseFor overrides the default cap for this one container.
+        host.succeed("grep -q -- '--forward-journal-max-use=64M' /etc/nixos-containers/demo.conf")
+
+        # 3. Bulk `nix-gantry update` (0 args -> update-containers.service):
+        #    (a) With unchanged manifest, leaves running `demo` un-restarted while starting stopped `cache`.
+        host.succeed("rm -f /run/container-updater/changed-*")
+        host.succeed("machinectl stop cache")
+        host.wait_until_fails("systemctl is-active container@cache.service")
+        demo_t0 = host.succeed("systemctl show -P ExecMainStartTimestampMonotonic container@demo.service").strip()
+        host.succeed("nix-gantry update")
+        demo_t1 = host.succeed("systemctl show -P ExecMainStartTimestampMonotonic container@demo.service").strip()
+        assert demo_t0 == demo_t1, f"unchanged running demo was restarted ({demo_t0} -> {demo_t1})"
+        host.wait_for_unit("container@cache.service")
+
+        #    (b) With updated manifest, activates Phase 2 (`demo`) strictly before Phase 3 (`cache`),
+        #        and skips `excludeFromUpdater` (`manual`) until explicitly requested.
+        host.succeed("ln -sfn ${manifestV2} /run/gantry-manifest.json")
+        host.succeed("nix-gantry update")
+        host.succeed("test $(nixos-container run demo -- cat /etc/gantry-gen) = v2")
+        host.succeed("test $(nixos-container run cache -- cat /etc/gantry-gen) = v2")
+        def last_mono(unit, msg):
+            out = host.succeed(f"journalctl -u {unit} -o json --no-pager")
+            entries = [int(e["__MONOTONIC_TIMESTAMP"]) for l in out.splitlines() if l and (e := json.loads(l)).get("MESSAGE") == msg]
+            assert entries, f"missing '{msg}' in {unit}"
+            return entries[-1]
+
+        p2_end = last_mono("update-container-activate@demo.service", "Activation complete for demo.")
+        p3_start = last_mono("update-container-activate@cache.service", "Activating staged update for container: cache")
+        assert p3_start >= p2_end, f"Phase 3 started ({p3_start}) before Phase 2 ended ({p2_end})"
+        host.succeed("test $(readlink -f /var/lib/machines/manual/current) = ${demoClosure}")
+        host.succeed("nix-gantry update manual")
+        host.succeed("test $(nixos-container run manual -- cat /etc/gantry-gen) = v2")
+      '';
+    };
 
   # No network in VM tests, so the image is built here and loaded, not pulled.
   podman-run =
@@ -573,6 +720,7 @@ in
       system.extraDependencies = [ unhealthyClosure ];
       # Keeps the failing activation short; the healthy boot needs far less.
       services.nix-gantry.updater.healthcheckTimeoutSec = 30;
+      specialisation.no-rollback.configuration.services.nix-gantry.updater.autoRollback = false;
     };
     testScript = ''
       from datetime import timedelta
@@ -609,6 +757,17 @@ in
       # The check did hang (a failed start would skip it), and its child is gone.
       host.succeed("test -s /run/hang-pid")
       host.fail("kill -0 $(cat /run/hang-pid)")
+      host.fail("test -e /run/container-updater/changed-demo")
+
+      # With autoRollback = false, failed activation exits non-zero, clears changed-demo,
+      # and leaves the failing closure selected for inspection without rolling back.
+      host.succeed("/run/current-system/specialisation/no-rollback/bin/switch-to-configuration test")
+      host.succeed("rm -f /run/hang-healthcheck")
+      host.succeed("systemctl reset-failed container@demo.service")
+      host.succeed(f"nix-env --profile {profile} --set ${unhealthyClosure}")
+      host.succeed("touch /run/container-updater/changed-demo")
+      host.fail("systemctl start --wait update-container-activate@demo.service")
+      host.succeed(f"test $(readlink -f {profile}) = ${unhealthyClosure}")
       host.fail("test -e /run/container-updater/changed-demo")
     '';
   };
@@ -796,9 +955,18 @@ in
               enable = true;
               serverPort = 8080;
               allowedClients = [ "caller" ];
+              airlock = true;
+              upstreams = [
+                {
+                  name = "ext";
+                  target = "198.51.100.3";
+                  port = 4443;
+                }
+              ];
             };
           }
           {
+            environment.systemPackages = [ pkgs.curl ];
             systemd.services.api = {
               wantedBy = [ "multi-user.target" ];
               script = ''
@@ -812,7 +980,10 @@ in
           ip = "10.233.5.2/24";
           egress = {
             restrictLan = true;
-            lanAllowlist = [ "10.233.5.3" ];
+            lanAllowlist = [
+              "10.233.5.3"
+              "192.168.99.3"
+            ];
           };
           tls = {
             enable = true;
@@ -853,7 +1024,10 @@ in
         ];
       };
       systemd.tmpfiles.rules = [ "L+ /nix/persist/pki/internal - - - - ${testPki}" ];
-      environment.systemPackages = [ pkgs.curl ];
+      environment.systemPackages = [
+        pkgs.curl
+        pkgs.python3
+      ];
       system.stateVersion = "25.11";
     };
     testScript = ''
@@ -900,14 +1074,44 @@ in
           timeout=timedelta(seconds=60),
       )
 
-      # Routed RFC1918 traffic from caller is actively dropped and logged by zt-caller-egress.
-      host.succeed("ip link add lan0 type dummy && ip addr add 192.168.99.1/24 dev lan0 && ip link set lan0 up")
-      host.succeed("ip neigh replace 192.168.99.2 lladdr 02:00:00:00:00:02 dev lan0 nud permanent")
+      # Routed peer netns holding RFC1918 (.2 blocked, .3 allowlisted) and public TEST-NET-2 (.2/.3).
+      host.succeed(
+          "ip netns add lanpeer"
+          " && ip link add lan0 type veth peer name lan1 netns lanpeer"
+          " && ip addr add 192.168.99.1/24 dev lan0"
+          " && ip addr add 198.51.100.1/24 dev lan0"
+          " && ip link set lan0 up"
+          " && ip -n lanpeer link set lo up"
+          " && ip -n lanpeer addr add 192.168.99.2/24 dev lan1"
+          " && ip -n lanpeer addr add 192.168.99.3/24 dev lan1"
+          " && ip -n lanpeer addr add 198.51.100.2/24 dev lan1"
+          " && ip -n lanpeer addr add 198.51.100.3/24 dev lan1"
+          " && ip -n lanpeer link set lan1 up"
+          " && ip -n lanpeer route add 10.233.5.0/24 via 192.168.99.1 dev lan1"
+          " && mkdir -p /tmp/lan-srv && echo lan-says-hi > /tmp/lan-srv/index.html"
+          " && systemd-run --unit=lan-http80 ip netns exec lanpeer ${pkgs.python3}/bin/python3 -m http.server 80 --directory /tmp/lan-srv"
+          " && systemd-run --unit=lan-http443 ip netns exec lanpeer ${pkgs.python3}/bin/python3 -m http.server 443 --directory /tmp/lan-srv"
+      )
+      host.wait_until_succeeds(
+          "curl -fsS --max-time 2 http://192.168.99.3/ | grep -q lan-says-hi"
+          " && curl -fsS --max-time 2 http://198.51.100.3:443/ | grep -q lan-says-hi",
+          timeout=timedelta(seconds=15),
+      )
+
+      # `egress.lanAllowlist` permits routed 192.168.99.3 (+ established return traffic),
+      # while non-allowlisted 192.168.99.2 is dropped and logged by zt-caller-egress.
+      host.succeed("nixos-container run caller -- curl -fsS --max-time 5 http://192.168.99.3/ | grep -q lan-says-hi")
       host.fail("nixos-container run caller -- curl -sS --max-time 2 http://192.168.99.2/")
       host.wait_until_succeeds(
           "journalctl -k --no-pager | grep -q 'zt-caller-egress drop:'",
           timeout=timedelta(seconds=10),
       )
+
+      # `tls.airlock = true` on `api` permits its declared upstream target on :443,
+      # while rejecting wrong ports or unlisted public IPs immediately.
+      host.succeed("nixos-container run api -- curl -fsS --max-time 5 http://198.51.100.3:443/ | grep -q lan-says-hi")
+      host.fail("nixos-container run api -- curl -sS --max-time 2 http://198.51.100.3:80/")
+      host.fail("nixos-container run api -- curl -sS --max-time 2 http://198.51.100.2:443/")
     '';
   };
 
@@ -1028,6 +1232,10 @@ in
                     type = lib.types.attrsOf lib.types.attrs;
                     default = { };
                   };
+                  services.nix-gantry.containers = lib.mkOption {
+                    type = lib.types.attrsOf lib.types.attrs;
+                    default = { };
+                  };
                   environment.persistence = lib.mkOption {
                     type = lib.types.attrsOf (
                       lib.types.submodule {
@@ -1056,13 +1264,22 @@ in
                         fsType = "tmpfs";
                       };
                     };
-                    services.nix-gantry.host = {
-                      enable = true;
-                      enablePersistence = true;
-                      subnet = "10.233.9.0/24";
-                      hostAddress = "10.233.9.1";
-                      manifestUrl = "https://example.invalid/manifest.json";
-                      journal.forward = forwardJournal;
+                    services.nix-gantry = {
+                      host = {
+                        enable = true;
+                        enablePersistence = true;
+                        persistPath = "/persist";
+                        subnet = "10.233.9.0/24";
+                        hostAddress = "10.233.9.1";
+                        manifestUrl = "https://example.invalid/manifest.json";
+                        journal.forward = forwardJournal;
+                      };
+                      containers.gantry-ns = {
+                        enable = true;
+                        ip = "10.233.9.6/24";
+                        hostBridge = "cbr0";
+                        hostDataDir = "/var/lib/gantry-ns";
+                      };
                     };
                     my.containers = {
                       on-root = {
@@ -1109,11 +1326,16 @@ in
                     name = "on-nested-tmpfs";
                     cfg = config.my.containers.on-nested-tmpfs;
                   })
+                  (self.lib.mkContainer {
+                    inherit config;
+                    name = "gantry-ns";
+                    cfg = config.services.nix-gantry.containers.gantry-ns;
+                  })
                 ];
               }
             )
           ];
-        }).config.environment.persistence."/nix/persist".directories;
+        }).config.environment.persistence."/persist".directories;
       dirsWithJournal = mkPersistEval true;
       dirsNoJournal = mkPersistEval false;
       expectedRoot = {
@@ -1124,6 +1346,12 @@ in
       };
       expectedNested = {
         directory = "/mnt/data/scratch/nested";
+        mode = "0755";
+        user = "1000";
+        group = "100";
+      };
+      expectedGantryNs = {
+        directory = "/var/lib/gantry-ns";
         mode = "0755";
         user = "1000";
         group = "100";
@@ -1147,6 +1375,12 @@ in
           ""
         else
           throw "host-persistence: nested tmpfs under ext4 not persisted"
+      }
+      ${
+        if builtins.elem expectedGantryNs dirsWithJournal then
+          ""
+        else
+          throw "host-persistence: services.nix-gantry.containers entry missing under custom persistPath"
       }
       ${if !mentionsDisk then "" else throw "host-persistence: ext4 path must not be persisted"}
       ${
@@ -1217,11 +1451,35 @@ in
               enableAudio = true;
               enableVideo = true;
               enableUSB = true;
+              additionalCapabilities = [ "CAP_NET_ADMIN" ];
               healthCheck = {
                 cmd = "true";
                 interval = "30s";
                 timeout = "5s";
               };
+              innerConfig =
+                { pkgs, ... }:
+                {
+                  environment.etc."fn-probe".text = pkgs.hello.pname;
+                };
+            })
+            (self.lib.mkContainer {
+              inherit config;
+              name = "nested";
+              cfg = {
+                ip = "10.233.8.3/24";
+                hostBridge = "cbr0";
+                privateUsers = "pick";
+                extraAllowedDevices = [
+                  {
+                    node = "/dev/ttyACM0";
+                    modifier = "rw";
+                  }
+                ];
+                extraCapabilities = [ "CAP_SYS_TIME" ];
+              };
+              enableNesting = true;
+              healthCheck = "curl -fsS http://127.0.0.1/health";
             })
           ];
         };
@@ -1231,9 +1489,31 @@ in
           modules = [ presetModule ];
         }).config;
       c = evaluated.containers.demo;
+      nested = evaluated.containers.nested;
       svc = evaluated.systemd.services."container@demo".serviceConfig;
       nft = evaluated.networking.nftables.tables.zt-demo-egress.content;
       pos = needle: lib.stringLength (lib.head (lib.splitString needle nft));
+
+      # oidcOptions without `issuerUrl` default must require the consumer to set it.
+      oidcRequiredMissing = builtins.tryEval (
+        builtins.seq
+          (inputs.nixpkgs.lib.nixosSystem {
+            inherit system;
+            modules = [
+              (
+                { lib, ... }:
+                {
+                  options.app = self.lib.oidcOptions {
+                    inherit lib;
+                    defaultName = "app";
+                  };
+                  config.system.stateVersion = "25.11";
+                }
+              )
+            ];
+          }).config.app.oidc.issuerUrl
+          true
+      );
 
       # Assertion checks on invalid TLS configs inside the guest evaluation.
       failedTlsAssertions =
@@ -1296,6 +1576,17 @@ in
             }
           ];
         } != [ ];
+      port443CollisionFails =
+        failedTlsAssertions {
+          serverPort = 8080;
+          upstreams = [
+            {
+              name = "a";
+              target = "10.233.8.10";
+              port = 443;
+            }
+          ];
+        } != [ ];
       clientsWithoutServerFails =
         failedTlsAssertions {
           allowedClients = [ "caller" ];
@@ -1324,8 +1615,22 @@ in
             // args
           )).assertions;
       inputGuardsWork =
-        mkFail {
+        mkFail { name = "_db"; }
+        && mkFail { name = "-flag"; }
+        && mkFail {
           cfg = {
+            hostBridge = "cbr0";
+          };
+        }
+        && mkFail {
+          cfg = {
+            ip = "10.233.8.2";
+            hostBridge = "cbr0";
+          };
+        }
+        && mkFail {
+          cfg = {
+            ip = "10.233.8/24";
             hostBridge = "cbr0";
           };
         }
@@ -1336,6 +1641,15 @@ in
         }
         && mkFail { enableGPU = true; }
         && mkFail { usesPodman = true; }
+        && mkFail { subDirs = [ "db" ]; }
+        && mkFail {
+          cfg = {
+            ip = "10.233.8.2/24";
+            hostBridge = "cbr0";
+            hostDataDir = "/var/lib/bad";
+          };
+          subDirs = [ ".." ];
+        }
         && mkFail {
           cfg = {
             ip = "10.233.8.2/24";
@@ -1347,10 +1661,10 @@ in
     in
     pkgs.runCommandLocal "nix-gantry-option-helpers-check" { } ''
       ${
-        if evaluated.demo.oidc.clientId == "demo-app" then
+        if evaluated.demo.oidc.clientId == "demo-app" && !oidcRequiredMissing.success then
           ""
         else
-          throw "oidcOptions: default clientId mismatch"
+          throw "oidcOptions: default clientId or missing-issuerUrl check failed"
       }
       ${
         if evaluated.demo.egress.restrictLan then
@@ -1379,10 +1693,29 @@ in
           throw "mkContainer: resource limits mismatch"
       }
       ${
-        if c.config.systemd.timers."demo-healthcheck".timerConfig.OnUnitActiveSec == "30s" then
+        if
+          c.config.systemd.timers."demo-healthcheck".timerConfig.OnUnitActiveSec == "30s"
+          && c.config.environment.etc."fn-probe".text == "hello"
+          && builtins.elem "CAP_NET_ADMIN" c.additionalCapabilities
+        then
           ""
         else
-          throw "mkContainer: healthCheck timer interval mismatch"
+          throw "mkContainer: healthCheck / function innerConfig / additionalCapabilities mismatch"
+      }
+      ${
+        if
+          nested.privateUsers == "pick"
+          && nested.timeoutStartSec == "90s"
+          && nested.bindMounts ? "/dev/fuse"
+          && builtins.elem "CAP_BPF" nested.additionalCapabilities
+          && builtins.elem "CAP_SYS_TIME" nested.additionalCapabilities
+          && builtins.any (d: d.node == "/dev/ttyACM0") nested.allowedDevices
+          && nested.config.systemd.timers."nested-healthcheck".timerConfig.OnUnitActiveSec == "1m"
+          && nested.config.systemd.services."nested-healthcheck".serviceConfig.TimeoutSec == "15s"
+        then
+          ""
+        else
+          throw "mkContainer: enableNesting / string healthCheck / extra caps & devices mismatch"
       }
       ${
         if pos "ip daddr 10.0.0.53 accept" < pos "} drop" then
@@ -1391,7 +1724,7 @@ in
           throw "egress: lanAllowlist must precede drop"
       }
       ${
-        if dupPortFails && inboundCollisionFails && clientsWithoutServerFails then
+        if dupPortFails && inboundCollisionFails && port443CollisionFails && clientsWithoutServerFails then
           ""
         else
           throw "tls assertions failed to catch invalid port/client config"
@@ -1485,9 +1818,27 @@ in
           ];
         }).config.containers.custom;
 
+      badContainerNameFails =
+        builtins.any (a: !a.assertion)
+          (inputs.nixpkgs.lib.nixosSystem {
+            inherit system;
+            modules = [
+              self.nixosModules.updater
+              {
+                services.nix-gantry.updater = {
+                  enable = true;
+                  manifestUrl = "https://example.invalid/manifest.json";
+                  containers = [ "_db" ];
+                };
+                system.stateVersion = "25.11";
+              }
+            ];
+          }).config.assertions;
+
       bulkScript = hostEval.systemd.services.update-containers.script;
     in
     pkgs.runCommandLocal "nix-gantry-module-options-check" { } ''
+      ${if badContainerNameFails then "" else throw "module-options: _db container name was not rejected"}
       ${
         if
           hostEval.services.nix-gantry.host.enable
@@ -1546,13 +1897,14 @@ in
             if [[ "$3" == *"standalone-host"* ]]; then
               echo '["standalone"]'
             else
-              echo '["good","broken-build","uncached"]'
+              echo '["good","partial-sig","broken-build","uncached"]'
             fi
             ;;
           "eval --raw")
             case "$3" in
               *'"standalone"'*) echo "/var/lib/machines/standalone/current" ;;
               *'"good"'*) echo "/nix/store/00000000000000000000000000000001-good" ;;
+              *'"partial-sig"'*) echo "/nix/store/00000000000000000000000000000005-partial" ;;
               *'"broken-build"'*) echo "/nix/store/00000000000000000000000000000004-broken" ;;
               *'"uncached"'*) echo "/nix/store/00000000000000000000000000000003-uncached" ;;
               *) exit 1 ;;
@@ -1571,6 +1923,11 @@ in
                   "/nix/store/00000000000000000000000000000001-good" \
                   "/nix/store/00000000000000000000000000000002-dep"
                 ;;
+              *-partial)
+                printf '%s\n' \
+                  "/nix/store/00000000000000000000000000000005-partial" \
+                  "/nix/store/00000000000000000000000000000006-dep2"
+                ;;
               *-uncached)
                 echo "/nix/store/00000000000000000000000000000003-uncached"
                 ;;
@@ -1582,19 +1939,23 @@ in
             case "$store" in
               https://down.invalid) exit 1 ;;
               https://cache-a.example)
-                printf '[{"path":"/nix/store/00000000000000000000000000000001-good","valid":true}]'
+                # cache-a has `01-good` plus both `partial-sig` paths, but `06-dep2` is unsigned here.
+                printf '[{"path":"/nix/store/00000000000000000000000000000001-good","valid":true},{"path":"/nix/store/00000000000000000000000000000005-partial","valid":true},{"path":"/nix/store/00000000000000000000000000000006-dep2","valid":true}]'
                 ;;
               https://cache-b.example)
-                printf '{"/nix/store/00000000000000000000000000000002-dep":{"narSize":1},"%s":null}' \
+                printf '{"/nix/store/00000000000000000000000000000002-dep":{"narSize":1},"/nix/store/00000000000000000000000000000006-dep2":{"narSize":1},"%s":null}' \
                   "/nix/store/00000000000000000000000000000003-uncached"
                 ;;
             esac
             ;;
           "store verify")
-            if [[ "$*" == *"trusted:good"* ]]; then
-              exit 0
+            if [[ "$*" != *"trusted:good"* ]]; then
+              exit 1
             fi
-            exit 1
+            if [[ "$*" == *"cache-a.example"* && "$*" == *"00000000000000000000000000000006-dep2"* ]]; then
+              exit 1
+            fi
+            exit 0
             ;;
           *)
             echo "unexpected mock nix call: $*" >&2
@@ -1602,11 +1963,15 @@ in
             ;;
         esac
       '';
+      mockSystemctl = pkgs.writeShellScriptBin "systemctl" ''
+        echo "$*" >> "$SYSTEMCTL_LOG"
+      '';
     in
     pkgs.runCommandLocal "nix-gantry-publish-manifest-cli-check"
       {
         nativeBuildInputs = [
           mockNix
+          mockSystemctl
           pkgs.bash
           pkgs.coreutils
           pkgs.jq
@@ -1614,18 +1979,52 @@ in
       }
       ''
         SCRIPT=${../bin/nix-gantry.sh}
+        export SYSTEMCTL_LOG="$PWD/systemctl.log"
 
-        # 1. Packaged CLI binaries: --version, --help, missing flag value, and `status --root`.
+        # 1. Packaged CLI binaries: --version, --help on every subcommand, and argument guards.
         ${pkg}/bin/nix-gantry --version | grep -qx "nix-gantry ${pkg.version}"
         ${pkg}/bin/nix-gantry --help | grep -q "publish-manifest"
         ${pkg}/bin/publish-manifest --version | grep -qx "nix-gantry ${pkg.version}"
         ${pkg}/bin/publish-manifest --help | grep -q -- "--flake-ref"
+        for sub in status stage activate update rollback; do
+          ${pkg}/bin/nix-gantry "$sub" --help | grep -q "Usage:"
+        done
         if ${pkg}/bin/publish-manifest --flake-ref >/dev/null 2>&1; then
           echo "dangling --flake-ref unexpectedly succeeded" >&2
           exit 1
         fi
+        for bad in "" "bogus" "status --unknown" "status --root" "stage" "activate" "rollback" "rollback a b" \
+                   "status ../evil" "stage a/b" "activate -flag" "update bad;name" "rollback ../evil"; do
+          # shellcheck disable=SC2086
+          if bash "$SCRIPT" $bad >/dev/null 2>&1; then
+            echo "invalid CLI invocation '$bad' unexpectedly succeeded" >&2
+            exit 1
+          fi
+        done
 
-        mkdir -p root/nix/var/nix/profiles/containers root/var/lib/machines/app root/run/container-updater
+        # Unit action dispatch (stage, activate, bulk/targeted update, rollback).
+        : > "$SYSTEMCTL_LOG"
+        bash "$SCRIPT" stage alpha beta
+        bash "$SCRIPT" activate alpha
+        bash "$SCRIPT" update
+        bash "$SCRIPT" update alpha
+        bash "$SCRIPT" rollback alpha
+        diff -u - "$SYSTEMCTL_LOG" <<'EOF'
+        start --wait update-container-stage@alpha.service
+        start --wait update-container-stage@beta.service
+        start --wait update-container-activate@alpha.service
+        start --wait update-containers.service
+        start --wait update-container@alpha.service
+        start --wait update-container-rollback@alpha.service
+        EOF
+
+        # Empty-host `status` (table and --json) + `/etc/nixos-containers/*.conf` discovery.
+        mkdir -p empty-root
+        ${pkg}/bin/nix-gantry status --root empty-root | grep -qx "No nix-gantry containers found."
+        ${pkg}/bin/nix-gantry status --json --root empty-root | jq -e '. == []'
+
+        mkdir -p root/etc/nixos-containers root/nix/var/nix/profiles/containers root/var/lib/machines/app root/run/container-updater
+        touch root/etc/nixos-containers/unstaged.conf
         mkdir -p root/target-cur root/target-prev
         ln -s "$PWD/root/target-cur" root/nix/var/nix/profiles/containers/app-1-link
         ln -s app-1-link root/nix/var/nix/profiles/containers/app
@@ -1633,7 +2032,14 @@ in
         ln -s "$PWD/root/target-prev" root/var/lib/machines/app/previous
         touch root/run/container-updater/changed-app
         ${pkg}/bin/nix-gantry status --json --root root > status.json
-        jq -e 'length == 1 and .[0].name == "app" and .[0].pendingRestart == true and (.[0].current | endswith("/target-cur")) and (.[0].previous | endswith("/target-prev"))' status.json
+        jq -e '
+          length == 2
+          and .[0].name == "app" and .[0].pendingRestart == true
+          and (.[0].current | endswith("/target-cur")) and (.[0].previous | endswith("/target-prev"))
+          and .[1].name == "unstaged" and .[1].pendingRestart == false
+          and .[1].current == null and .[1].previous == null
+        ' status.json
+        ${pkg}/bin/nix-gantry status --root root | grep -E '^unstaged +unknown +no +-$' >/dev/null
 
         # 2. Missing required flags and unknown flags must fail.
         if bash "$SCRIPT" publish-manifest --flake-ref . >/dev/null 2>&1; then
@@ -1652,14 +2058,24 @@ in
         fi
         grep -q "not a /nix/store path" standalone.err
 
-        # 4. Multi-substituter union + trusted key passes `good`, skips `broken-build` and `uncached`.
+        # 4. Multi-substituter union + per-path signature fallback (`partial-sig` has one unsigned
+        #    path on cache-a that cache-b signs) passes `good` + `partial-sig`, skips `broken-build` and `uncached`.
         bash "$SCRIPT" publish-manifest --flake-ref . --config factory --system x86_64-linux \
           --substituter https://cache-a.example \
           --substituter https://cache-b.example \
           --trusted-public-keys "trusted:good" > out.json
-        jq -e '.["x86_64-linux"] == {"good": "/nix/store/00000000000000000000000000000001-good"}' out.json
+        jq -e '.["x86_64-linux"] == {
+          "good": "/nix/store/00000000000000000000000000000001-good",
+          "partial-sig": "/nix/store/00000000000000000000000000000005-partial"
+        }' out.json
 
-        # 5. Untrusted key drops `good` too.
+        # With cache-a alone, `partial-sig`'s unsigned dependency is rejected by per-path fallback.
+        bash "$SCRIPT" publish-manifest --flake-ref . --config factory --system x86_64-linux \
+          --substituter https://cache-a.example \
+          --trusted-public-keys "trusted:good" > cache-a-only.json
+        jq -e '.["x86_64-linux"] == {}' cache-a-only.json
+
+        # 5. Untrusted key drops everything too.
         bash "$SCRIPT" publish-manifest --flake-ref . --config factory --system x86_64-linux \
           --substituter https://cache-a.example \
           --substituter https://cache-b.example \

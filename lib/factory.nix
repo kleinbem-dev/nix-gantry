@@ -161,6 +161,10 @@ in
   # without triggering module-argument recursion.
   assertions = [
     {
+      assertion = builtins.match "[a-zA-Z0-9][a-zA-Z0-9_-]*" name != null;
+      message = "nix-gantry (${name}): container name must match [a-zA-Z0-9][a-zA-Z0-9_-]*";
+    }
+    {
       assertion = (cfg.ip or "") != "" && lib.hasInfix "/" cfg.ip && lib.length containerOctets == 4;
       message = "nix-gantry (${name}): cfg.ip must be an IPv4 CIDR (e.g. \"10.233.1.2/24\")";
     }

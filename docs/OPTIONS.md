@@ -462,7 +462,7 @@ true
 
 
 
-Standalone containers managed by the updater\.
+Standalone containers managed by the updater (names must match ` [a-zA-Z0-9][a-zA-Z0-9_-]* `)\.
 
 
 
