@@ -5,6 +5,11 @@ See [README's Versioning section](README.md#versioning) for what
 
 ## Unreleased
 
+**Fixed:**
+- `publish-manifest` works with Nix 2.35+, which fails `nix path-info --store`
+  when a queried path is missing. It reported every such cache as unreachable
+  and refused to publish.
+
 ## v0.4.0
 
 **Breaking:**

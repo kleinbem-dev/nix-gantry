@@ -1938,6 +1938,19 @@ in
             shift 4
             case "$store" in
               https://down.invalid) exit 1 ;;
+              https://cache-strict.example)
+                # Like Nix 2.35+: one missing path fails the whole query.
+                for p in "$@"; do
+                  case "$p" in
+                    *-good | *-partial | *-dep2) ;;
+                    *)
+                      echo "error: path '$p' is not valid" >&2
+                      exit 1
+                      ;;
+                  esac
+                done
+                jq -n '$ARGS.positional | map({key: ., value: {narSize: 1}}) | from_entries' --args "$@"
+                ;;
               https://cache-a.example)
                 # cache-a has `01-good` plus both `partial-sig` paths, but `06-dep2` is unsigned here.
                 printf '[{"path":"/nix/store/00000000000000000000000000000001-good","valid":true},{"path":"/nix/store/00000000000000000000000000000005-partial","valid":true},{"path":"/nix/store/00000000000000000000000000000006-dep2","valid":true}]'
@@ -1947,6 +1960,9 @@ in
                   "/nix/store/00000000000000000000000000000003-uncached"
                 ;;
             esac
+            ;;
+          "store info")
+            [[ "$4" != https://down.invalid ]]
             ;;
           "store verify")
             if [[ "$*" != *"trusted:good"* ]]; then
@@ -2088,6 +2104,21 @@ in
           echo "unreachable substituter unexpectedly succeeded" >&2
           exit 1
         fi
+
+        # 7. A store that fails the whole query on one missing path (Nix 2.35+) counts as
+        #    reachable: `good` misses `02-dep` there, `partial-sig` is complete.
+        bash "$SCRIPT" publish-manifest --flake-ref . --config factory --system x86_64-linux \
+          --substituter https://cache-strict.example > strict.json
+        jq -e '.["x86_64-linux"] == {
+          "partial-sig": "/nix/store/00000000000000000000000000000005-partial"
+        }' strict.json
+        bash "$SCRIPT" publish-manifest --flake-ref . --config factory --system x86_64-linux \
+          --substituter https://cache-strict.example \
+          --substituter https://cache-b.example > strict-b.json
+        jq -e '.["x86_64-linux"] == {
+          "good": "/nix/store/00000000000000000000000000000001-good",
+          "partial-sig": "/nix/store/00000000000000000000000000000005-partial"
+        }' strict-b.json
 
         touch $out
       '';
