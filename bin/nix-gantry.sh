@@ -40,11 +40,26 @@ validate_container() {
 # Paths among "$@" that store $1 has; handles both Nix JSON output shapes.
 # Fails if the store cannot be queried; missing paths alone do not fail it.
 present_in() {
-  local store=$1 info
+  local store=$1
   shift
-  info=$(nix path-info --store "$store" --json "$@" 2>/dev/null) || return 1
-  jq -r 'if type == "array" then .[] | select(.valid != false) | .path
-         else to_entries[] | select(.value != null) | .key end' <<<"$info"
+  nix store info --store "$store" >/dev/null 2>&1 || return 1
+  valid_in "$store" "$@"
+}
+
+# Nix 2.35+ fails the whole query when one path is missing, so split the
+# paths until each query succeeds or is down to one missing path.
+valid_in() {
+  local store=$1 info half
+  shift
+  if info=$(nix path-info --store "$store" --json "$@" 2>/dev/null); then
+    jq -r 'if type == "array" then .[] | select(.valid != false) | .path
+           else to_entries[] | select(.value != null) | .key end' <<<"$info"
+    return 0
+  fi
+  [ $# -gt 1 ] || return 0
+  half=$(($# / 2))
+  valid_in "$store" "${@:1:half}"
+  valid_in "$store" "${@:half+1}"
 }
 
 verify_sigs() {
